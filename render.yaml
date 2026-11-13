@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: seu-luiz-financeiro
+    runtime: docker
+    plan: free
+    region: oregon
+    envVars:
+      - key: PORT
+        value: 8000

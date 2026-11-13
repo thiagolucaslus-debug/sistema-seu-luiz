@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>Acesso pelo Celular — Sistema Seu Luiz</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; background: #10151d; color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; }
+    .card { background: #1a202b; padding: 32px; border-radius: 24px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.6); max-width: 480px; width: 100%; text-align: center; border: 1px solid #334155; }
+    h1 { margin: 0 0 8px; font-size: 22px; font-weight: 800; color: #f8fafc; }
+    p { color: #94a3b8; font-size: 14px; margin: 0 0 20px; line-height: 1.5; }
+    .qr { background: #fff; padding: 16px; border-radius: 20px; display: inline-block; margin-bottom: 20px; box-shadow: 0 10px 25px rgba(0,0,0,0.2); }
+    .qr img { display: block; width: 220px; height: 220px; }
+    .link-box { background: #0f172a; padding: 12px 16px; border-radius: 12px; border: 1px solid #334155; word-break: break-all; font-family: monospace; font-size: 13px; color: #60a5fa; margin-bottom: 20px; text-decoration: none; display: block; font-weight: bold; }
+    .btn { display: inline-block; background: #2563eb; color: #fff; text-decoration: none; padding: 14px 28px; border-radius: 14px; font-weight: bold; font-size: 15px; width: 100%; box-sizing: border-box; transition: background 0.2s; }
+    .btn:hover { background: #1d4ed8; }
+    .note { margin-top: 20px; font-size: 12px; color: #64748b; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Conectar Celular ao Seu Luiz</h1>
+    <p>Aponte a câmera do seu smartphone para o QR Code abaixo ou acesse o link seguro HTTPS em qualquer rede 3G/4G/5G:</p>
+    
+    <div class="qr">
+      <img src="https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=https%3A%2F%2Fproducer-cancellation-connections-airline.trycloudflare.com" alt="QR Code de Acesso" />
+    </div>
+
+    <a href="https://producer-cancellation-connections-airline.trycloudflare.com" target="_blank" class="link-box">
+      https://producer-cancellation-connections-airline.trycloudflare.com
+    </a>
+
+    <a href="https://producer-cancellation-connections-airline.trycloudflare.com" target="_blank" class="btn">
+      Abrir Painel no Navegador
+    </a>
+
+    <p class="note">🔒 Conexão criptografada de ponta a ponta via Cloudflare Tunnel.</p>
+  </div>
+</body>
+</html>
