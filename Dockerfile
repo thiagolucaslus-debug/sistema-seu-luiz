@@ -11,6 +11,7 @@ FROM python:3.12-slim
 WORKDIR /app
 
 ENV PYTHONUNBUFFERED=1 \
+    PYTHONPATH="/app/backend" \
     PORT=8000
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
