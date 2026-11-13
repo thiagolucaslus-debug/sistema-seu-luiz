@@ -58,6 +58,24 @@ def gerar_pdf_fechamento(db: Session, pessoa_id: int, mes: int, ano: int, nome_s
         models.PagamentoPessoa.data <= date(ano, mes, ultimo_dia)
     ).order_by(models.PagamentoPessoa.data.asc()).all()
 
+    # Coleta parcelas futuras a vencer nos próximos meses
+    parcelas_futuras = []
+    for lanc in lancamentos_query:
+        for p in lanc.parcelas:
+            if (p.ano > ano) or (p.ano == ano and p.mes > mes):
+                if p.status != "pago":
+                    origem = lanc.cartao.nome if lanc.cartao else ("Conta / Dinheiro" if lanc.conta else "Outro")
+                    parcelas_futuras.append({
+                        "data_ord": (p.ano, p.mes),
+                        "mes_ano": f"{MESES_PT[p.mes][:3]}/{p.ano}",
+                        "descricao": lanc.descricao,
+                        "parcela": f"{p.numero}/{lanc.total_parcelas}" if lanc.total_parcelas > 1 else "À vista",
+                        "origem": origem,
+                        "valor": p.valor
+                    })
+    parcelas_futuras.sort(key=lambda x: (x["data_ord"], x["descricao"]))
+    total_futuro = sum(p["valor"] for p in parcelas_futuras)
+
     # Pasta para salvar os PDFs
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     pdf_dir = os.path.join(base_dir, "pdfs")
@@ -210,26 +228,31 @@ def gerar_pdf_fechamento(db: Session, pessoa_id: int, mes: int, ano: int, nome_s
         story.append(Spacer(1, 0.4*cm))
 
     # 6. Resumo e Saldo Final
-    story.append(Paragraph(f'<font size="11" color="{COR_CINZA_ESCURO}"><b>RESUMO CONSOLIDADO</b></font>',
+    story.append(Paragraph(f'<font size="11" color="{COR_CINZA_ESCURO}"><b>RESUMO CONSOLIDADO DESTE FECHAMENTO</b></font>',
                            ParagraphStyle("SecTitle3", spaceAfter=6)))
 
     resumo_rows = [
         ["(+) Saldo acumulado do mês anterior", fmt_brl(saldo_info["saldo_anterior"])],
-        ["(+) Total de compras e parcelas deste mês", fmt_brl(saldo_info["total_gastos_mes"])],
-        ["(=) Total Geral a Pagar", fmt_brl(saldo_info["total_a_pagar"])],
-        ["(-) Pagamentos recebidos neste mês", fmt_brl(saldo_info["total_pagamentos_mes"])],
+        ["(+) Compras e parcelas deste mês", fmt_brl(saldo_info["total_gastos_mes"])],
     ]
+    if saldo_info.get("total_compras_para_mim_mes", 0) > 0:
+        resumo_rows.append(["(-) Compras feitas para o titular (abatimento)", f"- {fmt_brl(saldo_info['total_compras_para_mim_mes'])}"])
+    if saldo_info.get("total_reembolsos_mes", 0) > 0:
+        resumo_rows.append(["(+) Reembolsos e acertos pagos a você", fmt_brl(saldo_info['total_reembolsos_mes'])])
+
+    resumo_rows.append(["(=) Total Líquido a Pagar deste Mês", fmt_brl(saldo_info["total_a_pagar"])])
+    resumo_rows.append(["(-) Pagamentos já recebidos neste mês", f"- {fmt_brl(saldo_info['total_pagamentos_mes'])}"])
 
     t_resumo = Table(resumo_rows, colWidths=[12.4*cm, 5.0*cm])
     t_resumo.setStyle(TableStyle([
         ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
         ('FONTSIZE', (0, 0), (-1, -1), 9.5),
-        ('PADDING', (0, 0), (-1, -1), 6),
+        ('PADDING', (0, 0), (-1, -1), 5.5),
         ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
         ('GRID', (0, 0), (-1, -1), 0.5, COR_BORDA),
         ('ROWBACKGROUNDS', (0, 0), (-1, -1), [white, COR_CINZA_CLARO]),
-        ('FONTNAME', (0, 2), (-1, 2), 'Helvetica-Bold'),
-        ('BACKGROUND', (0, 2), (-1, 2), HexColor("#DBEAFE")),
+        ('FONTNAME', (0, -2), (-1, -2), 'Helvetica-Bold'),
+        ('BACKGROUND', (0, -2), (-1, -2), HexColor("#DBEAFE")),
     ]))
     story.append(t_resumo)
     story.append(Spacer(1, 0.3*cm))
@@ -268,6 +291,38 @@ def gerar_pdf_fechamento(db: Session, pessoa_id: int, mes: int, ano: int, nome_s
         ('BOX', (0, 0), (-1, -1), 2, box_border),
     ]))
     story.append(t_final)
+
+    # 8. Tabela de Parcelas Futuras (se houver compras parceladas nos próximos meses)
+    if parcelas_futuras:
+        story.append(Spacer(1, 0.45*cm))
+        story.append(Paragraph(
+            f'<font size="11" color="{COR_CINZA_ESCURO}"><b>PARCELAS FUTURAS A VENCER NOS PRÓXIMOS MESES ({len(parcelas_futuras)} parcelas • Total Futuro: {fmt_brl(total_futuro)})</b></font>',
+            ParagraphStyle("SecTitleFut", spaceAfter=6)
+        ))
+        f_rows = [[
+            Paragraph("<b>Mês/Ano</b>", ParagraphStyle("THF", fontName="Helvetica-Bold", fontSize=9, textColor=white, alignment=TA_CENTER)),
+            Paragraph("<b>Descrição da Compra</b>", ParagraphStyle("THF", fontName="Helvetica-Bold", fontSize=9, textColor=white)),
+            Paragraph("<b>Origem / Cartão</b>", ParagraphStyle("THF", fontName="Helvetica-Bold", fontSize=9, textColor=white)),
+            Paragraph("<b>Parcela</b>", ParagraphStyle("THF", fontName="Helvetica-Bold", fontSize=9, textColor=white, alignment=TA_CENTER)),
+            Paragraph("<b>Valor</b>", ParagraphStyle("THF", fontName="Helvetica-Bold", fontSize=9, textColor=white, alignment=TA_RIGHT)),
+        ]]
+        for pf in parcelas_futuras:
+            f_rows.append([
+                Paragraph(pf["mes_ano"], ParagraphStyle("TDF", fontSize=8.5, alignment=TA_CENTER, fontName="Helvetica-Bold")),
+                Paragraph(pf["descricao"], ParagraphStyle("TDF", fontSize=8.5)),
+                Paragraph(pf["origem"], ParagraphStyle("TDF", fontSize=8.5)),
+                Paragraph(pf["parcela"], ParagraphStyle("TDF", fontSize=8.5, alignment=TA_CENTER)),
+                Paragraph(fmt_brl(pf["valor"]), ParagraphStyle("TDF", fontSize=8.5, alignment=TA_RIGHT, fontName="Helvetica-Bold")),
+            ])
+        t_fut = Table(f_rows, colWidths=[2.2*cm, 6.8*cm, 4.0*cm, 2.0*cm, 2.4*cm])
+        t_fut.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), HexColor("#334155")), # Slate 700
+            ('PADDING', (0, 0), (-1, -1), 4.5),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('GRID', (0, 0), (-1, -1), 0.5, COR_BORDA),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [white, HexColor("#F8FAFC")]),
+        ]))
+        story.append(t_fut)
 
     # 8. Rodapé
     story.append(Spacer(1, 0.8*cm))

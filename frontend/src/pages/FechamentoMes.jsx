@@ -104,16 +104,73 @@ export default function FechamentoMes() {
 
   const gerarTextoFechamento = (p) => {
     if (!p) return '';
-    return `Olá, *${p.nome}*! 👋\n\nSegue o seu *Fechamento Financeiro de ${meses[mes - 1]}/${ano}*:\n` +
-      `• Gastos no Cartão: *${fmt(p.total_compras_cartao)}*\n` +
-      (p.total_compras_para_mim > 0 ? `• Compras que você fez pra mim: *- ${fmt(p.total_compras_para_mim)}*\n` : '') +
-      (p.total_pagamentos > 0 ? `• Pagamentos já realizados: *- ${fmt(p.total_pagamentos)}*\n` : '') +
-      (p.saldo_devedor > 0
-        ? `\n*TOTAL A PAGAR: ${fmt(p.saldo_devedor)}*\n`
-        : p.credito_a_favor > 0
-          ? `\n*CRÉDITO A SEU FAVOR (eu te pago): ${fmt(p.credito_a_favor)}*\n`
-          : `\n*SITUAÇÃO: QUITADO (R$ 0,00)* 🎉\n`) +
-      `\nO demonstrativo completo em PDF foi gerado pelo sistema. Qualquer dúvida só me avisar! Abraço, Seu Luiz.`;
+    const nomeMes = meses[mes - 1];
+    const gastosMes = p.gastos_mes ?? p.total_compras_cartao ?? 0;
+    const saldoAnt = p.saldo_anterior ?? 0;
+    const comprasMim = p.compras_para_mim ?? p.total_compras_para_mim ?? 0;
+    const pags = p.total_pagamentos ?? 0;
+    const saldoDev = p.saldo_devedor ?? 0;
+    const creditoFav = p.credito_a_favor ?? 0;
+
+    let txt = `Olá, *${p.nome}*! 👋\n\n`;
+    txt += `Segue o seu *Fechamento Financeiro de ${nomeMes}/${ano}*:\n\n`;
+    txt += `📊 *Resumo dos Valores:*\n`;
+    if (saldoAnt > 0) {
+      txt += `• Saldo Pendente do Mês Anterior: *${fmt(saldoAnt)}*\n`;
+    }
+    txt += `• Compras / Parcelas deste mês: *${fmt(gastosMes)}*\n`;
+    if (comprasMim > 0) {
+      txt += `• Compras que você fez pra mim (abatimento): *- ${fmt(comprasMim)}*\n`;
+    }
+    if (pags > 0) {
+      txt += `• Pagamentos já recebidos: *- ${fmt(pags)}*\n`;
+    }
+    txt += `━━━━━━━━━━━━━━━━━━━━━\n`;
+    if (saldoDev > 0) {
+      txt += `👉 *TOTAL A PAGAR: ${fmt(saldoDev)}*\n\n`;
+    } else if (creditoFav > 0) {
+      txt += `👉 *CRÉDITO A SEU FAVOR (eu te pago): ${fmt(creditoFav)}*\n\n`;
+    } else {
+      txt += `👉 *SITUAÇÃO: TOTALMENTE QUITADO (R$ 0,00)* 🎉\n\n`;
+    }
+
+    // Detalhamento das compras deste mês
+    if (p.compras && p.compras.length > 0) {
+      txt += `🛍️ *Compras e Parcelas de ${nomeMes}:*\n`;
+      p.compras.slice(0, 8).forEach(c => {
+        const cartaoInfo = c.cartao ? ` (${c.cartao})` : '';
+        txt += `• ${c.descricao} [${c.parcela}${cartaoInfo}]: *${fmt(c.valor)}*\n`;
+      });
+      if (p.compras.length > 8) {
+        txt += `• ... e mais ${p.compras.length - 8} compras no PDF anexo\n`;
+      }
+      txt += `\n`;
+    } else {
+      txt += `🛍️ *Compras deste mês:* Nenhuma nova compra no período.\n\n`;
+    }
+
+    // Parcelas Futuras (se houver)
+    if (p.parcelas_futuras && p.parcelas_futuras.length > 0) {
+      const totalFut = p.parcelas_futuras.reduce((acc, pf) => acc + (pf.valor || 0), 0);
+      txt += `⏳ *Próximas Parcelas (a vencer nos próximos meses):*\n`;
+      p.parcelas_futuras.slice(0, 5).forEach(pf => {
+        const mesPf = meses[pf.mes - 1] || pf.mes;
+        txt += `• ${mesPf}/${pf.ano}: ${pf.descricao} [${pf.parcela}]: *${fmt(pf.valor)}*\n`;
+      });
+      if (p.parcelas_futuras.length > 5) {
+        txt += `• ... e mais ${p.parcelas_futuras.length - 5} parcelas futuras\n`;
+      }
+      txt += `👉 *Total restante futuro: ${fmt(totalFut)}*\n\n`;
+    }
+
+    // Link público para download do PDF
+    if (p.token_acesso) {
+      const linkPdf = `${window.location.origin}/public/fechamento/${p.token_acesso}/${mes}/${ano}/pdf`;
+      txt += `📄 *BAIXAR EXTRATO COMPLETO EM PDF:*\n${linkPdf}\n\n`;
+    }
+
+    txt += `Qualquer dúvida só me avisar! Abraço, Seu Luiz.`;
+    return txt;
   };
 
   const handleBaixarPdfModal = async () => {

@@ -556,14 +556,74 @@ function CardPessoa({ pessoa, contas, onRefresh }) {
   };
 
   // Envio via WhatsApp automático ou link Web direto
-  const handleEnviarWhatsApp = async (mes, ano, nomeMes) => {
+  const handleEnviarWhatsApp = async (mes, ano, nomeMes, h) => {
     setEnviandoWhats(true);
     const numLimpo = (pessoa.telefone || '').replace(/\D/g, '');
     const telefoneFinal = numLimpo.startsWith('55') ? numLimpo : `55${numLimpo}`;
-    const msgTexto = `Olá, *${pessoa.nome}*! 👋\n\nSegue o resumo do seu *Fechamento Financeiro de ${nomeMes}*:\n` +
-      `• Gastos no Cartão: *${fmt(pessoa.total_gastos_mes || 0)}*\n` +
-      (pessoa.saldo_devedor > 0 ? `\n*TOTAL A PAGAR: ${fmt(pessoa.saldo_devedor)}*\n` : '\n*SITUAÇÃO: QUITADO (R$ 0,00)* 🎉\n') +
-      `\nQualquer dúvida me avise! Abraço, Seu Luiz.`;
+
+    const saldoAnt = h?.saldo_anterior || 0;
+    const gastosMes = h?.total_gastos || 0;
+    const pagsMes = h?.total_pagamentos || 0;
+    const saldoDev = h?.saldo_devedor || 0;
+
+    let msgTexto = `Olá, *${pessoa.nome}*! 👋\n\n`;
+    msgTexto += `Segue o seu *Fechamento Financeiro de ${nomeMes}*:\n\n`;
+    msgTexto += `📊 *Resumo dos Valores:*\n`;
+    if (saldoAnt > 0) {
+      msgTexto += `• Saldo Pendente do Mês Anterior: *${fmt(saldoAnt)}*\n`;
+    }
+    msgTexto += `• Compras / Parcelas deste mês: *${fmt(gastosMes)}*\n`;
+    if (pagsMes > 0) {
+      msgTexto += `• Pagamentos já realizados: *- ${fmt(pagsMes)}*\n`;
+    }
+    msgTexto += `━━━━━━━━━━━━━━━━━━━━━\n`;
+    if (saldoDev > 0) {
+      msgTexto += `👉 *TOTAL A PAGAR: ${fmt(saldoDev)}*\n\n`;
+    } else {
+      msgTexto += `👉 *SITUAÇÃO: TOTALMENTE QUITADO (R$ 0,00)* 🎉\n\n`;
+    }
+
+    if (h?.lancamentos && h.lancamentos.length > 0) {
+      msgTexto += `🛍️ *Compras e Parcelas de ${nomeMes}:*\n`;
+      h.lancamentos.slice(0, 8).forEach(item => {
+        const cartaoInfo = item.cartao ? ` (${item.cartao})` : '';
+        msgTexto += `• ${item.descricao} [${item.parcela}${cartaoInfo}]: *${fmt(item.valor)}*\n`;
+      });
+      if (h.lancamentos.length > 8) {
+        msgTexto += `• ... e mais ${h.lancamentos.length - 8} compras no PDF anexo\n`;
+      }
+      msgTexto += `\n`;
+    } else {
+      msgTexto += `🛍️ *Compras deste mês:* Nenhuma nova compra no período.\n\n`;
+    }
+
+    // Parcelas Futuras se tiver no histórico
+    if (extrato?.historico) {
+      const futuras = extrato.historico.filter(hist => {
+        if (hist.ano > ano) return true;
+        if (hist.ano === ano && hist.mes > mes) return true;
+        return false;
+      });
+      if (futuras.length > 0) {
+        msgTexto += `⏳ *Parcelas nos próximos meses:*\n`;
+        futuras.slice(0, 4).forEach(fut => {
+          if (fut.total_gastos > 0) {
+            msgTexto += `• ${fut.nome_mes}: *${fmt(fut.total_gastos)}*\n`;
+          }
+        });
+        const totalFut = futuras.reduce((acc, fut) => acc + (fut.total_gastos || 0), 0);
+        if (totalFut > 0) {
+          msgTexto += `👉 *Total restante futuro: ${fmt(totalFut)}*\n\n`;
+        }
+      }
+    }
+
+    if (pessoa.token_acesso) {
+      const linkPdf = `${window.location.origin}/public/fechamento/${pessoa.token_acesso}/${mes}/${ano}/pdf`;
+      msgTexto += `📄 *BAIXAR EXTRATO COMPLETO EM PDF:*\n${linkPdf}\n\n`;
+    }
+
+    msgTexto += `Qualquer dúvida só me avisar! Abraço, Seu Luiz.`;
 
     try {
       // 1. Obtém o caminho absoluto do PDF gerado no backend
@@ -747,7 +807,7 @@ function CardPessoa({ pessoa, contas, onRefresh }) {
                           </button>
 
                           <button
-                            onClick={(e) => { e.stopPropagation(); handleEnviarWhatsApp(h.mes, h.ano, h.nome_mes); }}
+                            onClick={(e) => { e.stopPropagation(); handleEnviarWhatsApp(h.mes, h.ano, h.nome_mes, h); }}
                             disabled={enviandoWhats}
                             className="btn-success text-xs py-1 px-2.5"
                             title="Enviar Fechamento pelo WhatsApp"

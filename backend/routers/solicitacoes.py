@@ -3,11 +3,13 @@ import secrets
 from datetime import date
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from database import get_db
 import models
 import auth
 from routers.lancamentos import determinar_mes_inicial_fatura, gerar_parcelas
+from services.pdf_generator import gerar_pdf_fechamento
 
 router = APIRouter(tags=["solicitacoes"])
 
@@ -49,6 +51,30 @@ def obter_dados_publicos_pessoa(token: str, db: Session = Depends(get_db)):
             for c in cartoes
         ]
     }
+
+
+@router.get("/public/fechamento/{token}/{mes}/{ano}/pdf")
+def baixar_pdf_publico(token: str, mes: int, ano: int, db: Session = Depends(get_db)):
+    """Permite que a pessoa baixe seu extrato/fechamento oficial em PDF direto pelo link recebido no WhatsApp."""
+    pessoa = db.query(models.Pessoa).filter(
+        models.Pessoa.token_acesso == token,
+        models.Pessoa.ativa == True
+    ).first()
+    if not pessoa:
+        raise HTTPException(status_code=404, detail="Link inválido ou expirado.")
+
+    try:
+        caminho_pdf = gerar_pdf_fechamento(db, pessoa.id, mes, ano, "Seu Luiz")
+        if not os.path.exists(caminho_pdf):
+            raise HTTPException(status_code=500, detail="Arquivo PDF não foi gerado.")
+
+        return FileResponse(
+            caminho_pdf,
+            media_type="application/pdf",
+            filename=os.path.basename(caminho_pdf)
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao gerar PDF: {str(e)}")
 
 
 @router.post("/public/lancar/{token}")

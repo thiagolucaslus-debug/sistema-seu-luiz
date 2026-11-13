@@ -228,6 +228,7 @@ def fechamento_consolidado_mes(
     for p in pessoas:
         saldo = calcular_saldo_pessoa_mes(db, p.id, mes, ano)
         compras_pessoa = []
+        parcelas_futuras_pessoa = []
         lancamentos_p = db.query(models.Lancamento).filter(
             models.Lancamento.pessoa_id == p.id,
             models.Lancamento.cancelado == False
@@ -244,6 +245,16 @@ def fechamento_consolidado_mes(
                         "status": parc.status,
                         "data": l.data_lancamento.isoformat()
                     })
+                elif (parc.ano > ano) or (parc.ano == ano and parc.mes > mes):
+                    if parc.status != "pago":
+                        parcelas_futuras_pessoa.append({
+                            "mes": parc.mes,
+                            "ano": parc.ano,
+                            "descricao": l.descricao,
+                            "cartao": l.cartao.nome if l.cartao else None,
+                            "parcela": f"{parc.numero}/{l.total_parcelas}",
+                            "valor": parc.valor
+                        })
 
         dados_pessoas.append({
             "id": p.id,
@@ -260,7 +271,8 @@ def fechamento_consolidado_mes(
             "total_pagamentos": saldo["total_pagamentos_mes"],
             "saldo_devedor": saldo["saldo_devedor"],
             "credito_a_favor": saldo["credito_a_favor"],
-            "compras": compras_pessoa
+            "compras": compras_pessoa,
+            "parcelas_futuras": parcelas_futuras_pessoa
         })
         total_a_receber += saldo["saldo_devedor"]
         total_a_pagar += saldo["credito_a_favor"]
