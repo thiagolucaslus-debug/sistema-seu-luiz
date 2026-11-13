@@ -46,6 +46,7 @@ api.interceptors.response.use(
 export const auth = {
   checkSetup: () => api.get('/auth/check-setup'),
   setup: (data) => api.post('/auth/setup', data),
+  register: (data) => api.post('/auth/register', data),
   login: (data) => api.post('/auth/login', data),
   me: () => api.get('/auth/me'),
   trocarSenha: (data) => api.put('/auth/senha', data),

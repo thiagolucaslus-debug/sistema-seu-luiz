@@ -22,6 +22,14 @@ whatsapp-service/.wwebjs_cache/
 
 # Local build
 frontend/dist/
+dist/
+build/
+*.spec
+
+# PDFs & Database temporary files
+backend/pdfs/*.pdf
+backend/*.db-shm
+backend/*.db-wal
 
 # Logs
 *.log

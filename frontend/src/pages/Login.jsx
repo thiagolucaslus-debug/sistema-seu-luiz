@@ -6,8 +6,9 @@ import { Lock, User, ShieldCheck, Eye, EyeOff } from 'lucide-react';
 
 export default function Login() {
   const [isSetup, setIsSetup] = useState(true);
+  const [modo, setModo] = useState('login'); // 'login' | 'cadastro'
   const [loading, setLoading] = useState(true);
-  const [form, setForm] = useState({ nome: 'Seu Luiz', usuario: '', senha: '' });
+  const [form, setForm] = useState({ nome: '', usuario: '', senha: '' });
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [showSenha, setShowSenha] = useState(false);
@@ -27,8 +28,12 @@ export default function Login() {
     setError('');
     try {
       if (!isSetup) {
-        // Primeiro acesso — cria o usuário
-        await authApi.setup({ nome: form.nome, usuario: form.usuario, senha: form.senha });
+        // Primeiro acesso — cria o usuário mestre
+        await authApi.setup({ nome: form.nome || 'Administrador', usuario: form.usuario, senha: form.senha });
+        await login(form.usuario, form.senha);
+      } else if (modo === 'cadastro') {
+        // Cadastro de novo perfil
+        await authApi.register({ nome: form.nome, usuario: form.usuario, senha: form.senha });
         await login(form.usuario, form.senha);
       } else {
         await login(form.usuario, form.senha);
@@ -46,44 +51,70 @@ export default function Login() {
       <div className="login-background min-h-screen flex items-center justify-center">
         <div className="flex flex-col items-center gap-3">
           <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-          <span className="text-sm" role="status">Carregando Sistema Financeiro...</span>
+          <span className="text-sm" role="status">Carregando Administração Financeira...</span>
         </div>
       </div>
     );
   }
+
+  const isCadastro = !isSetup || modo === 'cadastro';
 
   return (
     <div className="login-background min-h-screen flex items-center justify-center p-4">
       <div className="card login-card w-full max-w-md p-8 sm:p-10">
 
         {/* Logo */}
-        <div className="text-center mb-8">
-          <div className="login-mark w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4 font-bold text-2xl select-none">
-            SL
+        <div className="text-center mb-6">
+          <div className="login-mark w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-3 font-black text-2xl select-none bg-gradient-to-tr from-blue-600 to-indigo-600 text-white shadow-lg shadow-blue-500/25">
+            AF
           </div>
-          <h1 className="text-2xl font-black text-gray-900 tracking-tight">Seu Luiz</h1>
-          <p className="text-gray-500 text-sm mt-1">
-            {isSetup ? 'Faça login para acessar o painel' : 'Primeiro acesso — crie seu usuário e senha'}
+          <h1 className="text-2xl font-black text-ink tracking-tight">Administração Financeira</h1>
+          <p className="text-slate-400 text-xs mt-1">
+            Gestão pessoal de contas, cartões e fechamentos
           </p>
         </div>
 
+        {/* Seletor Entrar / Criar Novo Perfil */}
+        {isSetup && (
+          <div className="flex gap-1 p-1 rounded-xl bg-slate-900 border border-slate-800 mb-6">
+            <button
+              type="button"
+              onClick={() => { setModo('login'); setError(''); }}
+              className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${
+                modo === 'login' ? 'bg-blue-600 text-white shadow' : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              Entrar
+            </button>
+            <button
+              type="button"
+              onClick={() => { setModo('cadastro'); setError(''); }}
+              className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${
+                modo === 'cadastro' ? 'bg-blue-600 text-white shadow' : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              Criar Novo Perfil
+            </button>
+          </div>
+        )}
+
         {error && (
-          <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl mb-5 text-sm font-medium flex items-center gap-2">
+          <div className="bg-red-500/10 border border-red-500/20 text-rose-400 px-4 py-3 rounded-xl mb-5 text-sm font-medium flex items-center gap-2">
             <span>⚠️</span><span>{error}</span>
           </div>
         )}
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          {/* Nome só no primeiro acesso */}
-          {!isSetup && (
+          {/* Nome completo no cadastro */}
+          {isCadastro && (
             <div>
-              <label className="label">Seu Nome</label>
+              <label className="label text-ink font-semibold">Seu Nome Completo</label>
               <div className="relative">
                 <User size={18} className="absolute left-3 top-3 text-gray-400" />
                 <input
                   type="text"
                   className="input pl-10"
-                  placeholder="Ex: Seu Luiz"
+                  placeholder="Ex: Francisco Luiz"
                   value={form.nome}
                   onChange={e => setForm({ ...form, nome: e.target.value })}
                   required
@@ -94,13 +125,13 @@ export default function Login() {
 
           {/* Usuário */}
           <div>
-            <label className="label">Usuário</label>
+            <label className="label text-ink font-semibold">Nome de Usuário</label>
             <div className="relative">
               <User size={18} className="absolute left-3 top-3 text-gray-400" />
               <input
                 type="text"
                 className="input pl-10"
-                placeholder={isSetup ? 'Seu usuário' : 'Escolha um nome de usuário'}
+                placeholder={isCadastro ? 'Escolha um usuário (ex: luiz, admin)' : 'Seu usuário'}
                 value={form.usuario}
                 onChange={e => setForm({ ...form, usuario: e.target.value })}
                 autoComplete="username"
@@ -111,7 +142,7 @@ export default function Login() {
 
           {/* Senha */}
           <div>
-            <label className="label">Senha</label>
+            <label className="label text-ink font-semibold">Senha</label>
             <div className="relative">
               <Lock size={18} className="absolute left-3 top-3 text-gray-400" />
               <input
@@ -120,13 +151,13 @@ export default function Login() {
                 placeholder="••••••••"
                 value={form.senha}
                 onChange={e => setForm({ ...form, senha: e.target.value })}
-                autoComplete={isSetup ? 'current-password' : 'new-password'}
+                autoComplete={isCadastro ? 'new-password' : 'current-password'}
                 required
               />
               <button
                 type="button"
                 onClick={() => setShowSenha(!showSenha)}
-                className="absolute right-3 top-3 text-gray-400 hover:text-gray-600"
+                className="absolute right-3 top-3 text-gray-400 hover:text-gray-200"
                 tabIndex={-1}
               >
                 {showSenha ? <EyeOff size={18} /> : <Eye size={18} />}
@@ -137,16 +168,16 @@ export default function Login() {
           <button
             type="submit"
             disabled={submitting}
-            className="w-full btn-primary py-3 text-base font-semibold mt-1 shadow-lg shadow-blue-500/25"
+            className="w-full btn-primary py-3 text-base font-bold mt-2 shadow-lg shadow-blue-500/25 flex items-center justify-center gap-2"
           >
-            {submitting ? 'Aguarde...' : (isSetup ? 'Acessar Sistema' : 'Criar Conta e Entrar')}
+            {submitting ? 'Aguarde...' : (isCadastro ? 'Criar Perfil e Entrar' : 'Acessar Sistema')}
           </button>
         </form>
 
-        <div className="mt-7 pt-5 border-t border-gray-100 text-center">
-          <p className="text-xs text-gray-400 flex items-center justify-center gap-1.5">
-            <ShieldCheck size={14} className="text-emerald-500" />
-            Dados armazenados de forma 100% local e segura
+        <div className="mt-7 pt-5 border-t border-slate-700/50 text-center">
+          <p className="text-xs text-slate-400 flex items-center justify-center gap-1.5">
+            <ShieldCheck size={14} className="text-emerald-400" />
+            Dados armazenados com segurança local e em nuvem
           </p>
         </div>
       </div>

@@ -4,15 +4,17 @@ import { useAuth } from '../contexts/AuthContext';
 import { useAppearance } from '../contexts/AppearanceContext';
 import { solicitacoes } from '../api/client';
 import Avatar from './Avatar';
+import ModalAcessoCelular from './ModalAcessoCelular';
 import {
   LayoutDashboard, CreditCard, Building2, Users, Grid3X3,
   ListPlus, BarChart3, Menu, X, LogOut, ChevronRight, Settings,
-  Sun, Moon, MessageCircle, CalendarCheck, CheckSquare
+  Sun, Moon, MessageCircle, CalendarCheck, CheckSquare, Smartphone
 } from 'lucide-react';
 
 export default function Layout({ children }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [pendentesCount, setPendentesCount] = useState(0);
+  const [modalCelular, setModalCelular] = useState(false);
   const location = useLocation();
   const navigate = useNavigate();
   const { usuario, logout } = useAuth();
@@ -87,7 +89,7 @@ export default function Layout({ children }) {
             <Avatar nome={nome} foto={foto} className="avatar--brand" />
             <div className="min-w-0">
               <p className="text-white font-bold text-lg leading-tight truncate">{nome}</p>
-              <p className="app-brand__subtitle">Controle financeiro</p>
+              <p className="app-brand__subtitle">Administração Financeira</p>
             </div>
           </Link>
           <button
@@ -96,6 +98,21 @@ export default function Layout({ children }) {
             aria-label="Fechar menu"
           >
             <X size={20} />
+          </button>
+        </div>
+
+        {/* Botão de Atalho para Acesso no Celular */}
+        <div className="px-3 pt-3 pb-1">
+          <button
+            type="button"
+            onClick={() => setModalCelular(true)}
+            className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold text-xs shadow-md shadow-blue-500/20 transition-all group"
+          >
+            <div className="flex items-center gap-2.5">
+              <Smartphone size={17} className="text-blue-200 group-hover:scale-110 transition-transform" />
+              <span>Acesso no Celular</span>
+            </div>
+            <span className="px-1.5 py-0.5 rounded text-[10px] bg-white/20 font-black tracking-wider">QR</span>
           </button>
         </div>
 
@@ -192,6 +209,16 @@ export default function Layout({ children }) {
           </div>
 
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setModalCelular(true)}
+              className="p-1.5 rounded-lg bg-blue-600/20 text-blue-400 border border-blue-500/30 flex items-center gap-1 text-xs font-bold"
+              title="Acesso Celular e Links"
+            >
+              <Smartphone size={16} />
+              <span className="text-[11px]">Links</span>
+            </button>
+
             {pendentesCount > 0 && (
               <Link to="/aprovacoes" className="px-2 py-0.5 text-xs font-bold rounded-full bg-amber-500 text-slate-950">
                 {pendentesCount}
@@ -215,6 +242,9 @@ export default function Layout({ children }) {
             {children}
           </div>
         </main>
+
+        {/* Modal de Acesso Celular */}
+        <ModalAcessoCelular isOpen={modalCelular} onClose={() => setModalCelular(false)} />
 
         {/* Barra de Navegação Inferior para Celular (Mobile BottomNav) */}
         <nav className="lg:hidden fixed bottom-0 inset-x-0 bg-slate-900/95 backdrop-blur border-t border-slate-800 z-30 flex items-center justify-around py-2 px-1">

@@ -23,6 +23,11 @@ class SetupRequest(BaseModel):
     usuario: str
     senha: str
 
+class RegisterRequest(BaseModel):
+    nome: str
+    usuario: str
+    senha: str
+
 class TrocaSenhaRequest(BaseModel):
     senha_atual: str
     nova_senha: str
@@ -57,6 +62,34 @@ def setup_inicial(req: SetupRequest, db: Session = Depends(get_db)):
 
     usuario = models.Usuario(
         nome=req.nome,
+        email=usuario_id,
+        senha_hash=auth.hash_senha(req.senha)
+    )
+    db.add(usuario)
+    db.commit()
+    db.refresh(usuario)
+
+    token = auth.criar_token(usuario)
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "usuario": dados_perfil(usuario)
+    }
+
+@router.post("/register")
+def registrar_novo_usuario(req: RegisterRequest, db: Session = Depends(get_db)):
+    """Permite que qualquer pessoa crie seu perfil de administração financeira."""
+    usuario_id = req.usuario.strip().lower()
+    if not usuario_id or not req.nome.strip() or not req.senha:
+        raise HTTPException(status_code=400, detail="Preencha todos os campos obrigatórios.")
+    if len(req.senha) < 4:
+        raise HTTPException(status_code=400, detail="A senha deve ter pelo menos 4 caracteres.")
+
+    if db.query(models.Usuario).filter(models.Usuario.email == usuario_id).first():
+        raise HTTPException(status_code=400, detail="Este nome de usuário já está em uso. Escolha outro.")
+
+    usuario = models.Usuario(
+        nome=req.nome.strip(),
         email=usuario_id,
         senha_hash=auth.hash_senha(req.senha)
     )

@@ -10,7 +10,7 @@ if backend_dir not in sys.path:
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from database import engine, Base
+from database import engine, Base, DATA_DIR
 import models
 
 # Configura WAL mode e timeout no SQLite para evitar locks de concorrência
@@ -48,9 +48,9 @@ with Session(bind=engine) as session:
         session.commit()
 
 app = FastAPI(
-    title="Sistema Financeiro - Seu Luiz",
-    description="API REST para controle financeiro pessoal completo",
-    version="1.0.0"
+    title="Administração Financeira API",
+    description="API REST para controle e administração financeira pessoal completa",
+    version="2.0.0"
 )
 
 # Permite acesso local, de túnel (Cloudflare) e de rede móvel
@@ -75,24 +75,26 @@ app.include_router(relatorios.router)
 app.include_router(whatsapp.router)
 app.include_router(solicitacoes.router)
 
-# Diretório para PDFs gerados
-base_dir = os.path.dirname(os.path.abspath(__file__))
-pdfs_dir = os.path.join(base_dir, "pdfs")
+# Diretório persistente para PDFs gerados
+pdfs_dir = os.path.join(DATA_DIR, "pdfs")
 os.makedirs(pdfs_dir, exist_ok=True)
 app.mount("/pdfs", StaticFiles(directory=pdfs_dir), name="pdfs")
 
-# Diretório para uploads (fotos de pessoas, comprovantes)
-uploads_dir = os.path.join(base_dir, "uploads")
+# Diretório persistente para uploads (fotos de pessoas, comprovantes)
+uploads_dir = os.path.join(DATA_DIR, "uploads")
 os.makedirs(uploads_dir, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "sistema": "Seu Luiz - Sistema Financeiro"}
+    return {"status": "ok", "sistema": "Administração Financeira"}
 
 # Monta o frontend compilado (Vite dist) em produção se existir
 from fastapi.responses import FileResponse
-frontend_dist = os.path.join(os.path.dirname(base_dir), "frontend", "dist")
+frontend_dist = os.path.join(getattr(sys, '_MEIPASS', os.path.dirname(backend_dir)), "frontend", "dist")
+if not os.path.exists(frontend_dist):
+    frontend_dist = os.path.join(os.path.dirname(backend_dir), "frontend", "dist")
+
 if os.path.exists(frontend_dist):
     assets_dir = os.path.join(frontend_dist, "assets")
     if os.path.exists(assets_dir):
@@ -106,9 +108,9 @@ if os.path.exists(frontend_dist):
         index_file = os.path.join(frontend_dist, "index.html")
         if os.path.exists(index_file):
             return FileResponse(index_file)
-        return {"mensagem": "API do Sistema Financeiro Seu Luiz em execução.", "docs": "/docs"}
+        return {"mensagem": "Administração Financeira API em execução.", "docs": "/docs"}
 else:
     @app.get("/")
     def root():
-        return {"mensagem": "API do Sistema Financeiro Seu Luiz em execução.", "docs": "/docs"}
+        return {"mensagem": "Administração Financeira API em execução.", "docs": "/docs"}
 
