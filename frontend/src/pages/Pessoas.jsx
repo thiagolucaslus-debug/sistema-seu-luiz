@@ -555,41 +555,51 @@ function CardPessoa({ pessoa, contas, onRefresh }) {
     }
   };
 
-  // Envio via WhatsApp automático ou link Web
+  // Envio via WhatsApp automático ou link Web direto
   const handleEnviarWhatsApp = async (mes, ano, nomeMes) => {
     setEnviandoWhats(true);
+    const numLimpo = (pessoa.telefone || '').replace(/\D/g, '');
+    const telefoneFinal = numLimpo.startsWith('55') ? numLimpo : `55${numLimpo}`;
+    const msgTexto = `Olá, *${pessoa.nome}*! 👋\n\nSegue o resumo do seu *Fechamento Financeiro de ${nomeMes}*:\n` +
+      `• Gastos no Cartão: *${fmt(pessoa.total_gastos_mes || 0)}*\n` +
+      (pessoa.saldo_devedor > 0 ? `\n*TOTAL A PAGAR: ${fmt(pessoa.saldo_devedor)}*\n` : '\n*SITUAÇÃO: QUITADO (R$ 0,00)* 🎉\n') +
+      `\nQualquer dúvida me avise! Abraço, Seu Luiz.`;
+
     try {
       // 1. Obtém o caminho absoluto do PDF gerado no backend
       const resPath = await pessoasApi.obterPdfPath(pessoa.id, mes, ano);
-      const { pdf_path, telefone } = resPath.data;
+      const { pdf_path, telefone } = resPath.data || {};
 
       // 2. Tenta enviar pelo serviço WhatsApp Web local
       try {
         const resEnvio = await whatsappApi.sendPdf({
           telefone: telefone || pessoa.telefone,
           pdf_path: pdf_path,
+          pdfPath: pdf_path,
           nome_pessoa: pessoa.nome,
-          mes_ano: nomeMes
+          mes_ano: nomeMes,
+          mensagem: msgTexto
         });
 
-        if (resEnvio.data.success) {
+        if (resEnvio.data?.success) {
           alert(`✅ PDF de ${pessoa.nome} (${nomeMes}) enviado com sucesso pelo WhatsApp!`);
           setEnviandoWhats(false);
           return;
         }
       } catch (whatsErr) {
-        // Se o serviço automático não estiver conectado ou der erro, abre via WhatsApp Web com mensagem
-        const numLimpo = (pessoa.telefone || '').replace(/\D/g, '');
-        const msg = encodeURIComponent(`Olá ${pessoa.nome}! Segue o fechamento de ${nomeMes}. Qualquer dúvida me avise!`);
+        // Se o serviço automático não estiver conectado ou der erro, abre via wa.me com a mensagem completa
         if (numLimpo) {
-          window.open(`https://wa.me/55${numLimpo}?text=${msg}`, '_blank');
+          window.open(`https://wa.me/${telefoneFinal}?text=${encodeURIComponent(msgTexto)}`, '_blank');
         } else {
-          window.open(`https://web.whatsapp.com`, '_blank');
+          window.open('https://web.whatsapp.com', '_blank');
         }
-        alert('Abrindo WhatsApp Web para envio manual. Para enviar o PDF pelo painel, conecte sua conta em Configurações.');
       }
     } catch (err) {
-      alert('Erro no envio: ' + err.message);
+      if (numLimpo) {
+        window.open(`https://wa.me/${telefoneFinal}?text=${encodeURIComponent(msgTexto)}`, '_blank');
+      } else {
+        alert('Erro ao processar envio: ' + (err.response?.data?.detail || err.message));
+      }
     } finally {
       setEnviandoWhats(false);
     }
@@ -682,132 +692,182 @@ function CardPessoa({ pessoa, contas, onRefresh }) {
             <div className="p-8 text-center text-[var(--muted)] text-sm">Carregando extrato de {pessoa.nome}...</div>
           ) : extrato ? (
             <div className="divide-y divide-[var(--line)]">
-              {extrato.historico.map((h, idx) => (
-                <div key={idx} className="bg-[var(--surface)]">
-                  {/* Linha do Mês */}
-                  <div
-                    className={`p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 cursor-pointer transition-colors ${
-                      h.is_atual ? 'bg-[var(--accent-tint)] hover-surface' : 'hover-surface'
-                    }`}
-                    onClick={() => setMesAberto(mesAberto === idx ? null : idx)}
-                  >
-                    <div className="flex items-center gap-3">
-                      <span className="font-bold text-[var(--ink)] text-sm">{h.nome_mes}</span>
-                      {h.is_atual && <span className="badge-blue text-[10px]">Mês Atual</span>}
-                      {h.is_passado && <span className="text-[var(--muted)] text-[11px]">Histórico</span>}
-                    </div>
+              {extrato.historico.map((h, idx) => {
+                const isSelected = mesAberto === idx;
+                return (
+                  <div key={idx} className={`transition-all ${isSelected ? 'bg-blue-950/20 border-y border-blue-500/40 shadow-inner' : 'bg-[var(--surface)]'}`}>
+                    {/* Linha do Mês */}
+                    <div
+                      className={`p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 cursor-pointer transition-all border-l-4 ${
+                        isSelected
+                          ? 'border-l-blue-500 bg-blue-500/15 text-white'
+                          : h.is_atual
+                            ? 'border-l-blue-400/50 bg-[var(--accent-tint)] hover-surface'
+                            : 'border-l-transparent hover-surface'
+                      }`}
+                      onClick={() => setMesAberto(isSelected ? null : idx)}
+                    >
+                      <div className="flex items-center gap-3 flex-wrap">
+                        <span className={`font-black text-sm tracking-tight transition-colors ${
+                          isSelected ? 'text-blue-400 text-base scale-105 origin-left' : 'text-[var(--ink)]'
+                        }`}>
+                          {h.nome_mes}
+                        </span>
 
-                    <div className="flex items-center justify-between sm:justify-end gap-4">
-                      <div className="text-right">
-                        {h.saldo_devedor > 0 ? (
-                          <span className="text-rose-600 font-extrabold text-sm">Pendente: {fmt(h.saldo_devedor)}</span>
-                        ) : (
-                          <span className="text-emerald-600 font-semibold text-xs">Quitado ✓</span>
-                        )}
+                        {isSelected ? (
+                          <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-blue-600 text-white flex items-center gap-1.5 shadow-md ring-2 ring-blue-400/40">
+                            <span className="w-2 h-2 rounded-full bg-white animate-pulse"></span>
+                            Visualizando
+                          </span>
+                        ) : h.is_atual ? (
+                          <span className="badge-blue text-[10px]">Mês Atual</span>
+                        ) : h.is_passado ? (
+                          <span className="text-[var(--muted)] text-[11px]">Histórico</span>
+                        ) : null}
                       </div>
 
-                      {/* Botões de PDF e WhatsApp */}
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={(e) => { e.stopPropagation(); handleDownloadPDF(h.mes, h.ano); }}
-                          disabled={gerandoPdf}
-                          className="btn-secondary text-xs py-1 px-2.5"
-                          title="Baixar PDF de Fechamento"
-                        >
-                          <Download size={13} /> PDF
-                        </button>
+                      <div className="flex items-center justify-between sm:justify-end gap-4">
+                        <div className="text-right">
+                          {h.saldo_devedor > 0 ? (
+                            <span className="text-rose-500 font-black text-sm">Pendente: {fmt(h.saldo_devedor)}</span>
+                          ) : (
+                            <span className="text-emerald-500 font-extrabold text-xs">Quitado ✓</span>
+                          )}
+                        </div>
 
-                        <button
-                          onClick={(e) => { e.stopPropagation(); handleEnviarWhatsApp(h.mes, h.ano, h.nome_mes); }}
-                          disabled={enviandoWhats}
-                          className="btn-success text-xs py-1 px-2.5"
-                          title="Enviar Fechamento pelo WhatsApp"
-                        >
-                          <MessageCircle size={13} /> {enviandoWhats ? 'Enviando...' : 'WhatsApp'}
-                        </button>
+                        {/* Botões de PDF e WhatsApp */}
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleDownloadPDF(h.mes, h.ano); }}
+                            disabled={gerandoPdf}
+                            className="btn-secondary text-xs py-1 px-2.5"
+                            title="Baixar PDF de Fechamento"
+                          >
+                            <Download size={13} /> PDF
+                          </button>
 
-                        {mesAberto === idx ? <ChevronUp size={16} className="text-gray-400" /> : <ChevronDown size={16} className="text-gray-400" />}
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleEnviarWhatsApp(h.mes, h.ano, h.nome_mes); }}
+                            disabled={enviandoWhats}
+                            className="btn-success text-xs py-1 px-2.5"
+                            title="Enviar Fechamento pelo WhatsApp"
+                          >
+                            <MessageCircle size={13} /> {enviandoWhats ? 'Enviando...' : 'WhatsApp'}
+                          </button>
+
+                          <div className={`p-1 rounded-lg transition-transform ${isSelected ? 'text-blue-400 bg-blue-500/20' : 'text-slate-400'}`}>
+                            {isSelected ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+                          </div>
+                        </div>
                       </div>
                     </div>
-                  </div>
 
-                  {/* Detalhes do Fechamento do Mês */}
-                  {mesAberto === idx && (
-                    <div className="p-5 bg-[var(--canvas)] border-t border-[var(--line)] space-y-4">
-                      {/* 4 Blocos de Resumo do Fechamento */}
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                        <div className="bg-[var(--surface)] p-3 rounded-xl border border-[var(--line)]">
-                          <span className="text-[11px] text-[var(--muted)] font-semibold block">Dívida Mês Anterior</span>
-                          <span className={`text-sm font-bold ${h.saldo_anterior > 0 ? 'text-rose-500' : 'text-[var(--muted)]'}`}>
-                            {fmt(h.saldo_anterior)}
+                    {/* Detalhes do Fechamento do Mês */}
+                    {isSelected && (
+                      <div className="p-5 bg-[var(--canvas)] border-t border-blue-500/30 border-l-4 border-l-blue-500 space-y-4">
+                        {/* Banner de Contexto de Mês Selecionado */}
+                        <div className="p-3.5 rounded-2xl bg-blue-500/10 border border-blue-500/30 flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <div className="w-9 h-9 rounded-xl bg-blue-600 text-white flex items-center justify-center font-black text-base shadow">
+                              📅
+                            </div>
+                            <div>
+                              <div className="flex items-center gap-2 text-xs">
+                                <span className="font-extrabold uppercase text-blue-400 tracking-wider">Fechamento Aberto</span>
+                                <span className="text-slate-500">•</span>
+                                <span className="text-slate-400">Pessoa: <strong className="text-[var(--ink)]">{pessoa.nome}</strong></span>
+                              </div>
+                              <p className="text-base font-black text-[var(--ink)] tracking-tight">
+                                Mês de Referência: <span className="text-blue-400 underline decoration-blue-500 underline-offset-4">{h.nome_mes}</span>
+                              </p>
+                            </div>
+                          </div>
+                          <span className="hidden md:inline-block text-[11px] font-semibold text-slate-400 bg-slate-800/80 px-3 py-1 rounded-xl border border-slate-700/60">
+                            Clique na linha de {h.nome_mes} para fechar
                           </span>
                         </div>
-                        <div className="bg-[var(--surface)] p-3 rounded-xl border border-[var(--line)]">
-                          <span className="text-[11px] text-[var(--muted)] font-semibold block">Compras / Parcelas</span>
-                          <span className="text-sm font-bold text-[var(--ink)]">{fmt(h.total_gastos)}</span>
-                        </div>
-                        <div className="bg-[var(--surface)] p-3 rounded-xl border border-[var(--line)]">
-                          <span className="text-[11px] text-[var(--muted)] font-semibold block">Total a Pagar</span>
-                          <span className="text-sm font-black text-blue-500">{fmt(h.total_a_pagar)}</span>
-                        </div>
-                        <div className="bg-[var(--surface)] p-3 rounded-xl border border-[var(--line)]">
-                          <span className="text-[11px] text-[var(--muted)] font-semibold block">Pagamentos Recebidos</span>
-                          <span className="text-sm font-bold text-emerald-500">{fmt(h.total_pagamentos)}</span>
-                        </div>
-                      </div>
 
-                      {/* Lista de Compras/Parcelas do Mês */}
-                      <div>
-                        <h5 className="text-[11px] font-bold text-[var(--muted)] uppercase tracking-wider mb-2">Compras no Cartão & Empréstimos</h5>
-                        {h.lancamentos.length === 0 ? (
-                          <p className="text-xs text-[var(--muted)] italic">Nenhum gasto registrado neste mês.</p>
-                        ) : (
-                          <div className="space-y-1.5">
-                            {h.lancamentos.map((item, i) => (
-                              <div key={i} className="flex items-center justify-between p-2.5 rounded-xl bg-[var(--surface)] border border-[var(--line)] text-xs">
-                                <div>
-                                  <span className="font-bold text-[var(--ink)]">{item.descricao}</span>
-                                  <div className="flex items-center gap-2 mt-0.5 text-[var(--muted)] text-[11px]">
-                                    <span>{item.cartao ? `💳 ${item.cartao}` : '🏦 Conta'}</span>
-                                    <span>•</span>
-                                    <span className="font-semibold text-blue-500">{item.parcela}</span>
-                                    <span>•</span>
-                                    <span>{new Date(item.data_lancamento + 'T00:00:00').toLocaleDateString('pt-BR')}</span>
+                        {/* 4 Blocos de Resumo do Fechamento */}
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                          <div className="bg-[var(--surface)] p-3 rounded-xl border border-[var(--line)]">
+                            <span className="text-[11px] text-[var(--muted)] font-semibold block">Dívida Mês Anterior</span>
+                            <span className={`text-sm font-bold ${h.saldo_anterior > 0 ? 'text-rose-500' : 'text-[var(--muted)]'}`}>
+                              {fmt(h.saldo_anterior)}
+                            </span>
+                          </div>
+                          <div className="bg-[var(--surface)] p-3 rounded-xl border border-[var(--line)]">
+                            <span className="text-[11px] text-[var(--muted)] font-semibold block">Compras / Parcelas</span>
+                            <span className="text-sm font-bold text-[var(--ink)]">{fmt(h.total_gastos)}</span>
+                          </div>
+                          <div className="bg-[var(--surface)] p-3 rounded-xl border border-[var(--line)]">
+                            <span className="text-[11px] text-[var(--muted)] font-semibold block">Total a Pagar</span>
+                            <span className="text-sm font-black text-blue-500">{fmt(h.total_a_pagar)}</span>
+                          </div>
+                          <div className="bg-[var(--surface)] p-3 rounded-xl border border-[var(--line)]">
+                            <span className="text-[11px] text-[var(--muted)] font-semibold block">Pagamentos Recebidos</span>
+                            <span className="text-sm font-bold text-emerald-500">{fmt(h.total_pagamentos)}</span>
+                          </div>
+                        </div>
+
+                        {/* Lista de Compras/Parcelas do Mês */}
+                        <div>
+                          <h5 className="text-[11px] font-black text-[var(--muted)] uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                            <span>Compras no Cartão & Empréstimos de</span>
+                            <span className="text-blue-400 font-extrabold">{h.nome_mes}</span>
+                          </h5>
+                          {h.lancamentos.length === 0 ? (
+                            <p className="text-xs text-[var(--muted)] italic">Nenhum gasto registrado neste mês.</p>
+                          ) : (
+                            <div className="space-y-1.5">
+                              {h.lancamentos.map((item, i) => (
+                                <div key={i} className="flex items-center justify-between p-2.5 rounded-xl bg-[var(--surface)] border border-[var(--line)] text-xs">
+                                  <div>
+                                    <span className="font-bold text-[var(--ink)]">{item.descricao}</span>
+                                    <div className="flex items-center gap-2 mt-0.5 text-[var(--muted)] text-[11px]">
+                                      <span>{item.cartao ? `💳 ${item.cartao}` : '🏦 Conta'}</span>
+                                      <span>•</span>
+                                      <span className="font-semibold text-blue-500">{item.parcela}</span>
+                                      <span>•</span>
+                                      <span>{new Date(item.data_lancamento + 'T00:00:00').toLocaleDateString('pt-BR')}</span>
+                                    </div>
                                   </div>
+                                  <span className="font-black text-[var(--ink)] text-sm">{fmt(item.valor)}</span>
                                 </div>
-                                <span className="font-black text-gray-900 text-sm">{fmt(item.valor)}</span>
-                              </div>
-                            ))}
+                              ))}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Lista de Pagamentos Recebidos */}
+                        {h.pagamentos.length > 0 && (
+                          <div>
+                            <h5 className="text-[11px] font-black text-emerald-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                              <span>Pagamentos Recebidos em</span>
+                              <span className="text-emerald-300 font-extrabold">{h.nome_mes}</span>
+                            </h5>
+                            <div className="space-y-1.5">
+                              {h.pagamentos.map((pag, i) => (
+                                <div key={i} className="flex items-center justify-between p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-xs">
+                                  <div>
+                                    <span className="font-bold text-emerald-400">Pagamento recebido</span>
+                                    <p className="text-emerald-300/80 text-[11px]">
+                                      {new Date(pag.data + 'T00:00:00').toLocaleDateString('pt-BR')}
+                                      {pag.forma_pagamento && ` • ${pag.forma_pagamento}`}
+                                      {pag.observacao && ` • ${pag.observacao}`}
+                                      {pag.conta && ` • Entrou em: ${pag.conta}`}
+                                    </p>
+                                  </div>
+                                  <span className="font-black text-emerald-400 text-sm">+{fmt(pag.valor)}</span>
+                                </div>
+                              ))}
+                            </div>
                           </div>
                         )}
                       </div>
-
-                      {/* Lista de Pagamentos Recebidos */}
-                      {h.pagamentos.length > 0 && (
-                        <div>
-                          <h5 className="text-[11px] font-bold text-emerald-700 uppercase tracking-wider mb-2">Pagamentos Recebidos Desta Pessoa</h5>
-                          <div className="space-y-1.5">
-                            {h.pagamentos.map((pag, i) => (
-                              <div key={i} className="flex items-center justify-between p-2.5 rounded-xl bg-emerald-50/60 border border-emerald-100 text-xs">
-                                <div>
-                                  <span className="font-bold text-emerald-900">Pagamento recebido</span>
-                                  <p className="text-emerald-700 text-[11px]">
-                                    {new Date(pag.data + 'T00:00:00').toLocaleDateString('pt-BR')}
-                                    {pag.forma_pagamento && ` • ${pag.forma_pagamento}`}
-                                    {pag.observacao && ` • ${pag.observacao}`}
-                                    {pag.conta && ` • Entrou em: ${pag.conta}`}
-                                  </p>
-                                </div>
-                                <span className="font-black text-emerald-700 text-sm">+{fmt(pag.valor)}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ))}
+                    )}
+                  </div>
+                );
+              })}
             </div>
           ) : null}
         </div>

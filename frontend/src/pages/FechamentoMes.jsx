@@ -90,9 +90,72 @@ export default function FechamentoMes() {
     }
   };
 
+  const extrairErro = (err) => {
+    const detail = err.response?.data?.detail;
+    if (typeof detail === 'string') return detail;
+    if (Array.isArray(detail)) {
+      return detail.map(d => d.msg || JSON.stringify(d)).join(', ');
+    }
+    if (detail && typeof detail === 'object') {
+      return detail.message || detail.error || JSON.stringify(detail);
+    }
+    return err.message || 'Erro de comunicação';
+  };
+
+  const gerarTextoFechamento = (p) => {
+    if (!p) return '';
+    return `Olá, *${p.nome}*! 👋\n\nSegue o seu *Fechamento Financeiro de ${meses[mes - 1]}/${ano}*:\n` +
+      `• Gastos no Cartão: *${fmt(p.total_compras_cartao)}*\n` +
+      (p.total_compras_para_mim > 0 ? `• Compras que você fez pra mim: *- ${fmt(p.total_compras_para_mim)}*\n` : '') +
+      (p.total_pagamentos > 0 ? `• Pagamentos já realizados: *- ${fmt(p.total_pagamentos)}*\n` : '') +
+      (p.saldo_devedor > 0
+        ? `\n*TOTAL A PAGAR: ${fmt(p.saldo_devedor)}*\n`
+        : p.credito_a_favor > 0
+          ? `\n*CRÉDITO A SEU FAVOR (eu te pago): ${fmt(p.credito_a_favor)}*\n`
+          : `\n*SITUAÇÃO: QUITADO (R$ 0,00)* 🎉\n`) +
+      `\nO demonstrativo completo em PDF foi gerado pelo sistema. Qualquer dúvida só me avisar! Abraço, Seu Luiz.`;
+  };
+
+  const handleBaixarPdfModal = async () => {
+    if (!modalWhatsApp) return;
+    try {
+      const url = pessoasApi.gerarPDFUrl(modalWhatsApp.id, mes, ano);
+      const token = localStorage.getItem('token');
+      const response = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!response.ok) throw new Error('Falha ao obter PDF do servidor.');
+      const blob = await response.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      const mesStr = String(mes).padStart(2, '0');
+      a.download = `fechamento_${modalWhatsApp.nome}_${mesStr}_${ano}.pdf`;
+      a.click();
+    } catch (e) {
+      alert('Erro ao baixar PDF: ' + e.message);
+    }
+  };
+
+  const handleAbrirWhatsAppDireto = () => {
+    if (!modalWhatsApp) return;
+    const numLimpo = (modalWhatsApp.telefone || '').replace(/\D/g, '');
+    const telFinal = numLimpo.startsWith('55') ? numLimpo : `55${numLimpo}`;
+    const texto = gerarTextoFechamento(modalWhatsApp);
+    if (!numLimpo) {
+      alert('Esta pessoa não tem telefone cadastrado. Atualize no cadastro de Pessoas.');
+      return;
+    }
+    window.open(`https://wa.me/${telFinal}?text=${encodeURIComponent(texto)}`, '_blank');
+  };
+
   const handleEnviarFechamentoWhatsApp = async () => {
     if (!modalWhatsApp) return;
     setEnviandoWhats(true);
+    const numLimpo = (modalWhatsApp.telefone || '').replace(/\D/g, '');
+    const telFinal = numLimpo.startsWith('55') ? numLimpo : `55${numLimpo}`;
+    const textoMensagem = gerarTextoFechamento(modalWhatsApp);
+
     try {
       // 1. Gera PDF e obtém o path absoluto no servidor
       const pdfRes = await pessoasApi.obterPdfPath(modalWhatsApp.id, mes, ano);
@@ -106,27 +169,26 @@ export default function FechamentoMes() {
       }
 
       // 2. Envia PDF pelo serviço WhatsApp com legenda formatada
-      const textoMensagem = `Olá, *${modalWhatsApp.nome}*! 👋\n\nSegue o seu *Fechamento Financeiro de ${meses[mes - 1]}/${ano}*:\n` +
-        `• Gastos no Cartão: *${fmt(modalWhatsApp.total_compras_cartao)}*\n` +
-        (modalWhatsApp.total_compras_para_mim > 0 ? `• Compras que você fez pra mim: *- ${fmt(modalWhatsApp.total_compras_para_mim)}*\n` : '') +
-        (modalWhatsApp.total_pagamentos > 0 ? `• Pagamentos já realizados: *- ${fmt(modalWhatsApp.total_pagamentos)}*\n` : '') +
-        (modalWhatsApp.saldo_devedor > 0
-          ? `\n*TOTAL A PAGAR: ${fmt(modalWhatsApp.saldo_devedor)}*\n`
-          : modalWhatsApp.credito_a_favor > 0
-            ? `\n*CRÉDITO A SEU FAVOR (eu te pago): ${fmt(modalWhatsApp.credito_a_favor)}*\n`
-            : `\n*SITUAÇÃO: QUITADO (R$ 0,00)* 🎉\n`) +
-        `\nO demonstrativo completo em PDF está anexado abaixo. Qualquer dúvida só me avisar! Abraço, Seu Luiz.`;
-
       await whatsappApi.sendPdf({
         telefone: telefone,
+        pdf_path: pdfPath,
         pdfPath: pdfPath,
-        mensagem: textoMensagem
+        mensagem: textoMensagem,
+        nome_pessoa: modalWhatsApp.nome,
+        mes_ano: `${meses[mes - 1]}/${ano}`
       });
 
       alert(`Fechamento e PDF enviados com sucesso para ${modalWhatsApp.nome}!`);
       setModalWhatsApp(null);
     } catch (err) {
-      alert('Erro ao enviar por WhatsApp: ' + (err.response?.data?.detail || err.message));
+      const msgErro = extrairErro(err);
+      if (numLimpo) {
+        if (window.confirm(`O envio automático pelo servidor retornou: "${msgErro}".\n\nDeseja abrir a conversa diretamente no WhatsApp com a mensagem pronta agora?`)) {
+          window.open(`https://wa.me/${telFinal}?text=${encodeURIComponent(textoMensagem)}`, '_blank');
+        }
+      } else {
+        alert('Erro ao enviar por WhatsApp: ' + msgErro);
+      }
     } finally {
       setEnviandoWhats(false);
     }
@@ -531,20 +593,48 @@ export default function FechamentoMes() {
                 </p>
               </div>
 
-              <div className="p-3 rounded-xl bg-blue-500/10 border border-blue-500/20 text-xs text-slate-300">
-                O sistema gerará automaticamente o <strong>PDF oficial do Fechamento</strong> e enviará diretamente para o WhatsApp do destinatário com a discriminação completa.
+              {/* Prévia da Mensagem */}
+              <div className="p-3 rounded-xl border border-slate-700/50 text-xs font-mono whitespace-pre-wrap max-h-36 overflow-y-auto" style={{ backgroundColor: 'var(--raised)' }}>
+                {gerarTextoFechamento(modalWhatsApp)}
               </div>
 
-              <div className="flex gap-2 justify-end pt-3 border-t border-slate-700/50">
-                <button type="button" onClick={() => setModalWhatsApp(null)} className="btn-secondary">Cancelar</button>
+              {/* Botões de Ação */}
+              <div className="space-y-2 pt-2">
                 <button
                   type="button"
-                  onClick={handleEnviarFechamentoWhatsApp}
-                  disabled={enviandoWhats || !modalWhatsApp.telefone}
-                  className="btn-primary bg-emerald-600 hover:bg-emerald-500 text-white"
+                  onClick={handleAbrirWhatsAppDireto}
+                  disabled={!modalWhatsApp.telefone}
+                  className="w-full btn-primary bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2.5 flex items-center justify-center gap-2 shadow-lg"
                 >
-                  {enviandoWhats ? 'Gerando PDF e Enviando...' : 'Enviar Agora'}
+                  <Send size={16} />
+                  <span>Abrir Conversa no WhatsApp (Recomendado)</span>
                 </button>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={handleBaixarPdfModal}
+                    className="btn-secondary text-xs py-2 flex items-center justify-center gap-1.5"
+                  >
+                    <Download size={14} />
+                    <span>Baixar PDF</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleEnviarFechamentoWhatsApp}
+                    disabled={enviandoWhats || !modalWhatsApp.telefone}
+                    className="btn-secondary text-xs py-2 flex items-center justify-center gap-1.5 text-blue-400 hover:text-blue-300"
+                    title="Envia via Bot do Servidor (requer WhatsApp Web conectado)"
+                  >
+                    <Send size={14} />
+                    <span>{enviandoWhats ? 'Enviando...' : 'Bot com PDF'}</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex justify-end pt-2 border-t border-slate-700/50">
+                <button type="button" onClick={() => setModalWhatsApp(null)} className="btn-secondary text-xs">Fechar</button>
               </div>
             </div>
           </div>
