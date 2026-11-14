@@ -30,6 +30,14 @@ build/
 backend/pdfs/*.pdf
 backend/*.db-shm
 backend/*.db-wal
+*.db-shm
+*.db-wal
+
+# Cloud OAuth & sync metadata (never commit secrets)
+google_drive_oauth.json
+backend/google_drive_oauth.json
+.cloud_sync_meta.json
+backend/.cloud_sync_meta.json
 
 # Logs
 *.log

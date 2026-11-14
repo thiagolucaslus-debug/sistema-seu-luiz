@@ -4,6 +4,11 @@ services:
     runtime: docker
     plan: free
     region: oregon
+    healthCheckPath: /health
     envVars:
       - key: PORT
         value: 8000
+      - key: CLOUD_CONTAINER
+        value: "1"
+      - key: GOOGLE_DRIVE_OAUTH_JSON
+        sync: false

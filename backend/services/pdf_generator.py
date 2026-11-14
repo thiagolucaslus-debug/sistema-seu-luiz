@@ -10,6 +10,7 @@ from reportlab.lib.colors import HexColor, white
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle, Spacer, HRFlowable
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
 from sqlalchemy.orm import Session
+from database import DATA_DIR
 import models
 from services.calculos import calcular_saldo_pessoa_mes
 
@@ -77,8 +78,7 @@ def gerar_pdf_fechamento(db: Session, pessoa_id: int, mes: int, ano: int, nome_s
     total_futuro = sum(p["valor"] for p in parcelas_futuras)
 
     # Pasta para salvar os PDFs
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    pdf_dir = os.path.join(base_dir, "pdfs")
+    pdf_dir = os.path.join(DATA_DIR, "pdfs")
     os.makedirs(pdf_dir, exist_ok=True)
 
     nome_sanitizado = "".join(c for c in pessoa.nome if c.isalnum() or c in (" ", "_", "-")).rstrip().replace(" ", "_")

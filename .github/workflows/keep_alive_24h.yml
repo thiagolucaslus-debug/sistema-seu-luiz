@@ -1,0 +1,98 @@
+name: Anti-Sono 24-7 & Monitoramento Nuvem (Render + Google Drive)
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Mantem https://sistema-seu-luiz.onrender.com acordado 24/7 (a cada 10 min)
+    # Render Free inclui 750h/mes gratuitas (1 mes de 31 dias = 744h -> custo R$ 0,00)
+    - cron: "*/10 * * * *"
+
+concurrency:
+  group: sistema-seu-luiz-keep-alive
+  cancel-in-progress: false
+
+jobs:
+  keep-alive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping 24/7 e Auto-Verificacao da Nuvem
+        env:
+          RENDER_APP_URL: ${{ vars.RENDER_APP_URL || 'https://sistema-seu-luiz.onrender.com' }}
+          GOOGLE_DRIVE_OAUTH_JSON: ${{ secrets.GOOGLE_DRIVE_OAUTH_JSON }}
+          RENDER_ADMIN_USER: ${{ secrets.RENDER_ADMIN_USER }}
+          RENDER_ADMIN_PASSWORD: ${{ secrets.RENDER_ADMIN_PASSWORD }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          base_url = (os.environ.get("RENDER_APP_URL") or "https://sistema-seu-luiz.onrender.com").strip().rstrip("/")
+          health_url = f"{base_url}/health"
+
+          last_err = None
+          health_data = None
+          for attempt in range(1, 5):
+              t0 = time.monotonic()
+              try:
+                  req = urllib.request.Request(
+                      health_url,
+                      headers={"User-Agent": "SistemaSeuLuiz-KeepAlive/2.0"},
+                  )
+                  with urllib.request.urlopen(req, timeout=35) as resp:
+                      raw = resp.read().decode("utf-8", errors="replace")
+                      elapsed_ms = int((time.monotonic() - t0) * 1000)
+                      print(f"[OK] Tentativa {attempt}: HTTP {resp.status} em {elapsed_ms} ms -> {raw}")
+                      if resp.status == 200:
+                          try:
+                              health_data = json.loads(raw)
+                          except Exception:
+                              health_data = {"status": "ok"}
+                          break
+              except Exception as exc:
+                  last_err = exc
+                  print(f"[AVISO] Tentativa {attempt}/4 falhou ({exc}). Aguardando 15s...")
+                  if attempt < 4:
+                      time.sleep(15)
+
+          if health_data is None:
+              print(f"[ERRO] Servidor nao respondeu apos 4 tentativas: {last_err}")
+              sys.exit(1)
+
+          nuvem = health_data.get("nuvem") or {}
+          drive_ok = nuvem.get("drive_conectado")
+          print(f"[INFO] Status Backup Google Drive no servidor: conectado={drive_ok}, ultimo_backup={nuvem.get('ultimo_backup')}")
+
+          # Auto-hidratacao opcional caso o container tenha reiniciado sem variavel no Render,
+          # mas os Secrets estejam salvos no GitHub Actions:
+          gd_token = (os.environ.get("GOOGLE_DRIVE_OAUTH_JSON") or "").strip()
+          adm_user = (os.environ.get("RENDER_ADMIN_USER") or "").strip()
+          adm_pass = (os.environ.get("RENDER_ADMIN_PASSWORD") or "").strip()
+          if drive_ok is False and gd_token and adm_user and adm_pass:
+              try:
+                  login_req = urllib.request.Request(
+                      f"{base_url}/auth/login",
+                      data=json.dumps({"usuario": adm_user, "senha": adm_pass}).encode("utf-8"),
+                      headers={"Content-Type": "application/json"},
+                      method="POST",
+                  )
+                  with urllib.request.urlopen(login_req, timeout=20) as lr:
+                      jwt_tok = json.loads(lr.read().decode("utf-8"))["access_token"]
+                  tok_req = urllib.request.Request(
+                      f"{base_url}/cloud/token",
+                      data=json.dumps({"token": gd_token, "restore_first": True}).encode("utf-8"),
+                      headers={
+                          "Content-Type": "application/json",
+                          "Authorization": f"Bearer {jwt_tok}",
+                      },
+                      method="POST",
+                  )
+                  with urllib.request.urlopen(tok_req, timeout=60) as tr:
+                      print("[OK] Auto-hidratacao do Google Drive concluida:", tr.read().decode("utf-8"))
+              except Exception as exc:
+                  print(f"[AVISO] Auto-hidratacao opcional nao executada: {exc}")
+          PY

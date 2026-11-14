@@ -5,13 +5,13 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from PIL import Image, ImageOps, UnidentifiedImageError
 from sqlalchemy.orm import Session
-from database import get_db
+from database import get_db, DATA_DIR
 import models
 import auth
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-UPLOADS_DIR = Path(__file__).resolve().parents[1] / "uploads"
+UPLOADS_DIR = Path(DATA_DIR) / "uploads"
 
 # 'usuario' é o identificador de login — internamente guardado no campo email do banco
 class LoginRequest(BaseModel):

@@ -1,7 +1,25 @@
 import { useEffect, useState } from 'react';
-import { Camera, Check, KeyRound, MessageCircle, Monitor, Moon, QrCode, Sun, UserRound } from 'lucide-react';
-import { auth, whatsapp } from '../api/client';
+import {
+  Camera,
+  Check,
+  Cloud,
+  Copy,
+  Download,
+  ExternalLink,
+  KeyRound,
+  MessageCircle,
+  Monitor,
+  Moon,
+  QrCode,
+  RefreshCw,
+  ShieldCheck,
+  Sun,
+  Upload,
+  UserRound,
+} from 'lucide-react';
+import { auth, cloud, whatsapp } from '../api/client';
 import Avatar from '../components/Avatar';
+import { describeCloudState, formatCloudTimestamp, isLocalBrowserHost } from '../components/cloudFormat';
 import { useAppearance } from '../contexts/AppearanceContext';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -158,6 +176,310 @@ function Senha() {
   );
 }
 
+function NuvemGoogleDrive() {
+  const [status, setStatus] = useState({ checking: true });
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState(null);
+  const [tokenInput, setTokenInput] = useState('');
+  const [restoreFirst, setRestoreFirst] = useState(true);
+  const isLocalHost = typeof window !== 'undefined' && isLocalBrowserHost(window.location.hostname);
+
+  async function carregarStatus() {
+    try {
+      const { data } = await cloud.getStatus();
+      setStatus(data);
+      return data;
+    } catch {
+      setStatus({ connected: false, error_offline: true });
+      return null;
+    }
+  }
+
+  useEffect(() => {
+    let active = true;
+    let timer;
+    async function loop() {
+      try {
+        const { data } = await cloud.getStatus();
+        if (active) setStatus(data);
+      } catch {
+        if (active) setStatus(prev => ({ ...prev, checking: false }));
+      } finally {
+        if (active) timer = setTimeout(loop, 6000);
+      }
+    }
+    loop();
+    return () => { active = false; clearTimeout(timer); };
+  }, []);
+
+  async function conectarUmClique() {
+    setBusy(true);
+    setMessage(null);
+    const popup = window.open('about:blank', '_blank');
+    try {
+      const { data } = await cloud.authorize();
+      if (popup) popup.location.href = data.url;
+      else window.open(data.url, '_blank', 'noopener');
+      setMessage({ text: 'Conclua o login na janela do Google. Assim que autorizar, a conexão será ativada automaticamente.' });
+
+      const started = Date.now();
+      const poll = async () => {
+        const atual = await carregarStatus();
+        if (atual?.connected && atual.connection_version !== data.connection_version) {
+          setMessage({ text: `Google Drive conectado (${atual.account || 'conta vinculada'})! Salvamento automático ativo.` });
+          return;
+        }
+        if (Date.now() - started < 300000) {
+          setTimeout(poll, 2200);
+        }
+      };
+      setTimeout(poll, 2200);
+    } catch (error) {
+      if (popup) popup.close();
+      setMessage({ error: true, text: detail(error, 'Não foi possível iniciar o login no Google Drive.') });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function ativarComCodigo(event) {
+    event.preventDefault();
+    if (!tokenInput.trim()) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const { data } = await cloud.importToken({
+        token: tokenInput.trim(),
+        restore_first: restoreFirst,
+        sync_immediately: true,
+      });
+      setStatus(data);
+      setTokenInput('');
+      setMessage({ text: `Google Drive conectado (${data.account || 'conta vinculada'})! Seus dados estão protegidos.` });
+    } catch (error) {
+      setMessage({ error: true, text: detail(error, 'Código inválido ou expirado.') });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function importarClienteJson(event) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const parsed = JSON.parse(await file.text());
+      const { data } = await cloud.configureClient(parsed);
+      setStatus(data);
+      setMessage({ text: 'Cliente OAuth Google configurado. Agora clique em Conectar Google Drive.' });
+    } catch (error) {
+      setMessage({ error: true, text: detail(error, 'Arquivo JSON inválido. Use o JSON de credenciais OAuth do Google.') });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function salvarAgora() {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const { data } = await cloud.syncNow();
+      setStatus(data);
+      setMessage({ text: 'Backup completo (banco + comprovantes) salvo no Google Drive!' });
+    } catch (error) {
+      setMessage({ error: true, text: detail(error, 'Falha ao salvar backup no Google Drive.') });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function restaurarAgora() {
+    if (!window.confirm('Deseja restaurar os dados e fotos salvos na pasta do Google Drive? Isso atualizará o banco atual com a cópia da nuvem.')) {
+      return;
+    }
+    setBusy(true);
+    setMessage(null);
+    try {
+      const { data } = await cloud.restoreNow({ force: true });
+      setStatus(data);
+      setMessage({ text: 'Dados e comprovantes restaurados do Google Drive com sucesso!' });
+    } catch (error) {
+      setMessage({ error: true, text: detail(error, 'Falha ao restaurar dados do Google Drive.') });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copiarCodigoNuvem() {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const { data } = await cloud.exportToken();
+      await navigator.clipboard.writeText(data.compact_token);
+      setMessage({ text: 'Código GOOGLE_DRIVE_OAUTH_JSON copiado! Cole nas Variáveis de Ambiente do Render para persistência eterna.' });
+    } catch (error) {
+      setMessage({ error: true, text: detail(error, 'Não foi possível copiar o código da nuvem.') });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function baixarZip() {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const response = await cloud.downloadBackupZip();
+      const url = window.URL.createObjectURL(new Blob([response.data], { type: 'application/zip' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `backup_sistema_seu_luiz_${new Date().toISOString().slice(0, 10)}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      setMessage({ text: 'Pacote completo (.zip) baixado com sucesso.' });
+    } catch (error) {
+      setMessage({ error: true, text: detail(error, 'Não foi possível gerar o arquivo .zip de backup.') });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function desconectarDrive() {
+    if (!window.confirm('Desconectar o Google Drive deste painel? Os arquivos já salvos no seu Drive permanecerão intactos.')) {
+      return;
+    }
+    setBusy(true);
+    setMessage(null);
+    try {
+      const { data } = await cloud.disconnect();
+      setStatus(data);
+      setMessage({ text: 'Google Drive desconectado.' });
+    } catch (error) {
+      setMessage({ error: true, text: detail(error, 'Não foi possível desconectar.') });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const badge = describeCloudState(status);
+
+  return (
+    <Panel
+      icon={Cloud}
+      title="Nuvem 24/7 & Google Drive"
+      description="Anti-sono 24/7 gratuito e backup automático de lançamentos e fotos no seu Google Drive"
+    >
+      <div className="flex flex-wrap gap-2 items-center">
+        <span className={badge.badgeClass}>{badge.label}</span>
+        <span className="badge-green">
+          <ShieldCheck size={13} className="mr-1" /> Anti-Sono 24/7 Ativo ({status.keep_alive_interval_minutes || 10} min)
+        </span>
+      </div>
+
+      {status.connected ? (
+        <div className="mt-4 space-y-3">
+          <div className="rounded-xl border p-3 text-sm space-y-1" style={{ borderColor: 'var(--line)', background: 'var(--raised)' }}>
+            {status.account && <p><strong>Conta Google:</strong> {status.account}</p>}
+            <p><strong>Pasta privada:</strong> {status.folder_name}</p>
+            <p><strong>Último salvamento:</strong> {formatCloudTimestamp(status.last_sync_at)} {status.revision ? `(rev. #${status.revision})` : ''}</p>
+            <p><strong>Arquivos protegidos:</strong> Banco SQLite íntegro + {status.uploads_synced_count || 0} foto(s)/comprovante(s)</p>
+            {status.folder_url && (
+              <p className="pt-1">
+                <a href={status.folder_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 font-semibold text-blue-600 hover:underline">
+                  Abrir pasta no Google Drive <ExternalLink size={14} />
+                </a>
+              </p>
+            )}
+          </div>
+
+          {status.is_cloud_container && !status.env_var_configured && (
+            <div className="rounded-xl border border-amber-300 bg-amber-50/80 text-amber-900 p-3 text-xs space-y-1">
+              <p className="font-bold">Dica importante para o Render nunca esquecer a conexão:</p>
+              <p>Clique em <strong>Copiar Código Render</strong> abaixo e cole na variável <code>GOOGLE_DRIVE_OAUTH_JSON</code> em <em>Environment</em> no painel do Render.</p>
+            </div>
+          )}
+
+          <div className="flex flex-wrap gap-2 pt-1">
+            <button type="button" className="btn-primary" disabled={busy || status.syncing} onClick={salvarAgora}>
+              <RefreshCw size={16} /> Salvar no Drive agora
+            </button>
+            <button type="button" className="btn-secondary" disabled={busy || status.restoring} onClick={restaurarAgora}>
+              <Cloud size={16} /> Restaurar do Drive
+            </button>
+            <button type="button" className="btn-secondary" disabled={busy} onClick={copiarCodigoNuvem}>
+              <Copy size={16} /> Copiar Código Render
+            </button>
+            <button type="button" className="btn-secondary" disabled={busy} onClick={baixarZip}>
+              <Download size={16} /> Baixar Backup (.zip)
+            </button>
+            <button type="button" className="btn-secondary text-red-600" disabled={busy} onClick={desconectarDrive}>
+              Desconectar
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="mt-4 space-y-4">
+          <p className="text-sm" style={{ color: 'var(--muted)' }}>
+            Conecte seu Google Drive uma única vez: toda compra, pagamento ou comprovante será salvo automaticamente na sua conta Google e restaurado sozinho se o servidor reiniciar.
+          </p>
+
+          {(isLocalHost || status.custom_client_configured) && (
+            <button type="button" className="btn-primary w-full sm:w-auto" disabled={busy} onClick={conectarUmClique}>
+              <Cloud size={18} /> Conectar Google Drive em 1 Clique
+            </button>
+          )}
+
+          <form onSubmit={ativarComCodigo} className="space-y-2 rounded-xl border p-3" style={{ borderColor: 'var(--line)', background: 'var(--raised)' }}>
+            <label className="block">
+              <span className="label">Ativar com Código da Nuvem (gerado pelo CONFIGURAR_NUVEM_24H.bat)</span>
+              <input
+                className="input"
+                placeholder="Cole aqui seu código GDRIVE1:... ou JSON"
+                value={tokenInput}
+                onChange={event => setTokenInput(event.target.value)}
+              />
+            </label>
+            <label className="flex items-center gap-2 text-xs cursor-pointer" style={{ color: 'var(--muted)' }}>
+              <input
+                type="checkbox"
+                checked={restoreFirst}
+                onChange={event => setRestoreFirst(event.target.checked)}
+              />
+              Restaurar automaticamente dados já existentes no Google Drive ao ativar
+            </label>
+            <div className="flex flex-wrap gap-2 pt-1">
+              <button className="btn-primary" disabled={busy || !tokenInput.trim()}>
+                Ativar Google Drive
+              </button>
+              <button type="button" className="btn-secondary" disabled={busy} onClick={baixarZip}>
+                <Download size={16} /> Baixar Backup Local (.zip)
+              </button>
+            </div>
+          </form>
+
+          <details className="text-xs" style={{ color: 'var(--muted)' }}>
+            <summary className="cursor-pointer font-semibold">Opções avançadas (importar cliente OAuth JSON próprio)</summary>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <label className="btn-secondary cursor-pointer text-xs">
+                <Upload size={14} /> Importar client_secret.json
+                <input className="sr-only" type="file" accept=".json,application/json" disabled={busy} onChange={importarClienteJson} />
+              </label>
+            </div>
+          </details>
+        </div>
+      )}
+
+      {status.last_error && !message && (
+        <p role="alert" className="feedback feedback--error">{status.last_error}</p>
+      )}
+      <Feedback message={message} />
+    </Panel>
+  );
+}
+
 function WhatsApp() {
   const [status, setStatus] = useState({ state: 'checking' });
   const [busy, setBusy] = useState(false);
@@ -235,10 +557,10 @@ export default function Configuracoes() {
   return (
     <div className="space-y-6">
       <header className="page-heading">
-        <div><h1>Configurações</h1><p>Perfil, aparência e conexões do sistema</p></div>
+        <div><h1>Configurações</h1><p>Perfil, aparência, backup na nuvem 24/7 e conexões do sistema</p></div>
       </header>
       <div className="grid gap-5 md:grid-cols-2 items-start">
-        <Perfil /><Aparencia /><Senha /><WhatsApp />
+        <Perfil /><Aparencia /><NuvemGoogleDrive /><WhatsApp /><Senha />
       </div>
     </div>
   );

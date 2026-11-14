@@ -2,7 +2,7 @@ import os
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
-from database import get_db
+from database import get_db, DATA_DIR
 import models
 import auth
 from services.calculos import calcular_saldo_pessoa_mes
@@ -76,8 +76,7 @@ def upload_foto(id: int, file: UploadFile = File(...), db: Session = Depends(get
     if ext not in [".jpg", ".jpeg", ".png", ".webp", ".gif"]:
         raise HTTPException(status_code=400, detail="Formato de imagem inválido. Use JPG, PNG ou WEBP.")
 
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    uploads_dir = os.path.join(base_dir, "uploads")
+    uploads_dir = os.path.join(DATA_DIR, "uploads")
     os.makedirs(uploads_dir, exist_ok=True)
 
     timestamp = int(datetime.now().timestamp())
@@ -87,7 +86,7 @@ def upload_foto(id: int, file: UploadFile = File(...), db: Session = Depends(get
     with open(filepath, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    pessoa.foto_path = f"http://localhost:8000/uploads/{filename}"
+    pessoa.foto_path = f"/uploads/{filename}"
     db.commit()
     db.refresh(pessoa)
 

@@ -12,6 +12,7 @@ WORKDIR /app
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONPATH="/app/backend" \
+    CLOUD_CONTAINER=1 \
     PORT=8000
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

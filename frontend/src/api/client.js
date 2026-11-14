@@ -131,4 +131,17 @@ export const whatsapp = {
   disconnect: () => api.post('/whatsapp/disconnect'),
 };
 
+// Persistência automática na nuvem (Google Drive + Anti-Sono 24/7)
+export const cloud = {
+  getStatus: () => api.get('/cloud/status'),
+  authorize: () => api.post('/cloud/oauth/authorize'),
+  configureClient: (data) => api.post('/cloud/configure-client', data),
+  importToken: (data) => api.post('/cloud/token', data),
+  exportToken: () => api.get('/cloud/export-token'),
+  syncNow: () => api.post('/cloud/sync'),
+  restoreNow: (data = { force: true }) => api.post('/cloud/restore', data),
+  disconnect: () => api.delete('/cloud/disconnect'),
+  downloadBackupZip: () => api.get('/cloud/backup-zip', { responseType: 'blob' }),
+};
+
 export default api;

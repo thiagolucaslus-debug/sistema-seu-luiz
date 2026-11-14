@@ -5,7 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
-from database import get_db
+from database import get_db, DATA_DIR
 import models
 import auth
 from routers.lancamentos import determinar_mes_inicial_fatura, gerar_parcelas
@@ -13,8 +13,7 @@ from services.pdf_generator import gerar_pdf_fechamento
 
 router = APIRouter(tags=["solicitacoes"])
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-UPLOADS_DIR = os.path.join(BASE_DIR, "uploads")
+UPLOADS_DIR = os.path.join(DATA_DIR, "uploads")
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 
 
