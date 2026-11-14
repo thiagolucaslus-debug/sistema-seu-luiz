@@ -59,6 +59,14 @@ def _collect_user_upload_filenames(db: Session, usuario: models.Usuario) -> set[
         if fp:
             rels.add(fp)
 
+    for (mp,) in (
+        db.query(models.Modulo.foto_path)
+        .filter(models.Modulo.usuario_id == usuario.id, models.Modulo.foto_path != None)
+        .all()
+    ):
+        if mp:
+            rels.add(mp)
+
     for (cp,) in (
         db.query(models.Lancamento.comprovante_path)
         .filter(models.Lancamento.usuario_id == usuario.id, models.Lancamento.comprovante_path != None)

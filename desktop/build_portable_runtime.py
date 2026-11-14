@@ -79,6 +79,8 @@ def build_python_runtime() -> None:
     ref_py = Path(r"D:\ROBO EDITOR\desktop\portable_runtime\python_runtime")
     if ref_py.is_dir():
         for dll in ref_py.glob("*.dll"):
+            if any(skip in dll.name.lower() for skip in ("tcl", "tk86", "_tkinter")):
+                continue
             dst_dll = PY_RUNTIME_DIR / dll.name
             if not dst_dll.exists():
                 shutil.copy2(dll, dst_dll)

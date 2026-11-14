@@ -348,7 +348,7 @@ function NuvemGoogleDrive() {
       const url = window.URL.createObjectURL(new Blob([response.data], { type: 'application/zip' }));
       const link = document.createElement('a');
       link.href = url;
-      link.download = `backup_sistema_seu_luiz_${new Date().toISOString().slice(0, 10)}.zip`;
+      link.download = `backup_administracao_financeira_${new Date().toISOString().slice(0, 10)}.zip`;
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -420,10 +420,12 @@ function NuvemGoogleDrive() {
             <button type="button" className="btn-primary" disabled={busy || status.syncing} onClick={salvarAgora}>
               <RefreshCw size={16} /> {status.vault_connected ? 'Sincronizar Nuvem agora' : 'Salvar no Drive agora'}
             </button>
-            <button type="button" className="btn-secondary" disabled={busy || status.restoring} onClick={restaurarAgora}>
-              <Cloud size={16} /> {status.vault_connected ? 'Restaurar da Nuvem' : 'Restaurar do Drive'}
-            </button>
-            {!status.vault_connected && (
+            {status.is_primary_owner !== false && (
+              <button type="button" className="btn-secondary" disabled={busy || status.restoring} onClick={restaurarAgora}>
+                <Cloud size={16} /> {status.vault_connected ? 'Restaurar da Nuvem' : 'Restaurar do Drive'}
+              </button>
+            )}
+            {!status.vault_connected && status.is_primary_owner !== false && (
               <button type="button" className="btn-secondary" disabled={busy} onClick={copiarCodigoNuvem}>
                 <Copy size={16} /> Copiar Código Render
               </button>
@@ -431,7 +433,7 @@ function NuvemGoogleDrive() {
             <button type="button" className="btn-secondary" disabled={busy} onClick={baixarZip}>
               <Download size={16} /> Baixar Backup (.zip)
             </button>
-            {!status.vault_connected && (
+            {!status.vault_connected && status.is_primary_owner !== false && (
               <button type="button" className="btn-secondary text-red-600" disabled={busy} onClick={desconectarDrive}>
                 Desconectar
               </button>
@@ -574,7 +576,7 @@ function WhatsApp() {
           <QrCode size={18} /> {status.state === 'error' ? 'Tentar novamente' : 'Conectar por QR Code'}
         </button>
       )}
-      {status.state === 'offline' && <p className="mt-3 text-sm text-gray-600">Abra o sistema pelo iniciar.bat para iniciar o serviço.</p>}
+      {status.state === 'offline' && <p className="mt-3 text-sm text-gray-600">Abra o aplicativo Administração Financeira no PC para iniciar o serviço local de WhatsApp.</p>}
       <Feedback message={message} />
     </Panel>
   );

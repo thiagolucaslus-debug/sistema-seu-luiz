@@ -381,6 +381,7 @@ class CloudSyncManager:
         self._last_reason: str = ""
         self._wake_event = threading.Event()
         self._worker_thread: threading.Thread | None = None
+        self._oauth_init_thread: threading.Thread | None = None
 
         self._load_initial_credentials()
         self._load_initial_vault_credentials()
@@ -708,19 +709,26 @@ class CloudSyncManager:
                 self._save_credentials()
 
         # Sincronização inicial inteligente em background (restaura se o Drive já tiver backup mais completo, ou semeia)
-        threading.Thread(
+        init_thread = threading.Thread(
             target=self._safe_initial_connect_worker,
             name="seu-luiz-oauth-init",
             daemon=True,
-        ).start()
+        )
+        with self._state_lock:
+            self._oauth_init_thread = init_thread
+        init_thread.start()
         return self.status()
 
     def _safe_initial_connect_worker(self) -> None:
+        with self._state_lock:
+            if self._shutdown:
+                return
         try:
             self.smart_initial_sync(prefer_restore=True, reason="oauth_connected")
         except Exception as exc:
             with self._state_lock:
-                self._last_error = str(exc)
+                if not self._shutdown:
+                    self._last_error = str(exc)
 
     def import_oauth_token(
         self,
@@ -2017,7 +2025,12 @@ class CloudSyncManager:
         with self._state_lock:
             if self._shutdown or self._restoring:
                 return
-            if not self.is_connected() or not bool(self.credentials.get("auto_sync_enabled", True)):
+            auto_ok = (
+                bool(self.vault_credentials.get("auto_sync_enabled", True))
+                if self.is_vault_connected()
+                else bool(self.credentials.get("auto_sync_enabled", True))
+            )
+            if not self.is_connected() or not auto_ok:
                 return
             now = time.monotonic()
             if not self._dirty:
@@ -2081,37 +2094,151 @@ class CloudSyncManager:
         return None
 
     def shutdown(self) -> None:
+        with self._state_lock:
+            oauth_init = self._oauth_init_thread
+        if (
+            oauth_init is not None
+            and oauth_init.is_alive()
+            and oauth_init is not threading.current_thread()
+        ):
+            oauth_init.join(timeout=5.0)
         self.flush_pending()
         with self._state_lock:
             self._shutdown = True
             self._wake_event.set()
             worker = self._worker_thread
         if worker is not None and worker.is_alive() and worker is not threading.current_thread():
-            worker.join(timeout=3.0)
+            worker.join(timeout=5.0)
 
     # =========================================================================
-    # Exportação de Pacote ZIP Completo (Offline / Emergência em 1 Clique)
+    # Exportação de Pacote ZIP Completo ou Isolado por Usuário (1 Clique)
     # =========================================================================
 
-    def export_backup_zip_bytes(self) -> bytes:
+    def export_backup_zip_bytes(
+        self,
+        usuario_id: int | None = None,
+        *,
+        include_unclaimed_uploads: bool = False,
+    ) -> bytes:
         tmp_dir = Path(tempfile.mkdtemp(prefix="seu_luiz_zip_"))
         try:
             snap_file = tmp_dir / "financeiro.db"
             snap_info = create_sqlite_snapshot(self.db_path, snap_file)
+            allowed_uploads: set[str] | None = None
+            excluded_uploads: set[str] = set()
+
+            if usuario_id is not None:
+                uid = int(usuario_id)
+                conn = sqlite3.connect(str(snap_file), timeout=30.0)
+                try:
+                    existing_tables = {
+                        r[0]
+                        for r in conn.execute(
+                            "SELECT name FROM sqlite_master WHERE type='table'"
+                        ).fetchall()
+                    }
+                    media_queries = [
+                        ("usuarios", "logo_path", "id = ?", "id != ?"),
+                        ("pessoas", "foto_path", "usuario_id = ?", "usuario_id IS NOT NULL AND usuario_id != ?"),
+                        ("modulos", "foto_path", "usuario_id = ?", "usuario_id IS NOT NULL AND usuario_id != ?"),
+                        ("lancamentos", "comprovante_path", "usuario_id = ?", "usuario_id IS NOT NULL AND usuario_id != ?"),
+                        ("solicitacoes_lancamento", "comprovante_path", "usuario_id = ?", "usuario_id IS NOT NULL AND usuario_id != ?"),
+                    ]
+
+                    def _extract_upload_names(where_attr_idx: int) -> set[str]:
+                        rels_found: set[str] = set()
+                        for tbl, col, wh_own, wh_other in media_queries:
+                            if tbl not in existing_tables:
+                                continue
+                            cols = {r[1] for r in conn.execute(f"PRAGMA table_info({tbl})").fetchall()}
+                            wh = wh_own if where_attr_idx == 2 else wh_other
+                            if col in cols and ("usuario_id" not in wh or "usuario_id" in cols):
+                                for (val,) in conn.execute(
+                                    f"SELECT {col} FROM {tbl} WHERE {wh} AND {col} IS NOT NULL",
+                                    (uid,),
+                                ).fetchall():
+                                    if isinstance(val, str) and val.strip():
+                                        rels_found.add(val.strip())
+                        out_names: set[str] = set()
+                        for rel in rels_found:
+                            norm = rel.replace("\\", "/")
+                            if norm.startswith("/uploads/") or norm.startswith("uploads/"):
+                                fname = Path(norm.lstrip("/").removeprefix("uploads/")).name
+                                if fname and fname not in (".", ".."):
+                                    out_names.add(fname)
+                        return out_names
+
+                    own_uploads = _extract_upload_names(2)
+                    other_uploads = _extract_upload_names(3)
+                    if include_unclaimed_uploads:
+                        excluded_uploads = other_uploads - own_uploads
+                    else:
+                        allowed_uploads = own_uploads
+
+                    with conn:
+                        if "parcelas" in existing_tables and "lancamentos" in existing_tables:
+                            conn.execute(
+                                "DELETE FROM parcelas WHERE lancamento_id NOT IN (SELECT id FROM lancamentos WHERE usuario_id = ?)",
+                                (uid,),
+                            )
+                        if "subcategorias" in existing_tables and "modulos" in existing_tables:
+                            conn.execute(
+                                "DELETE FROM subcategorias WHERE modulo_id NOT IN (SELECT id FROM modulos WHERE usuario_id = ?)",
+                                (uid,),
+                            )
+                        for tbl in (
+                            "solicitacoes_lancamento",
+                            "pagamentos_pessoa",
+                            "pagamentos_fatura",
+                            "lancamentos",
+                            "modulos",
+                            "pessoas",
+                            "cartoes",
+                            "contas_bancarias",
+                        ):
+                            if tbl in existing_tables:
+                                cols = {
+                                    r[1]
+                                    for r in conn.execute(f"PRAGMA table_info({tbl})").fetchall()
+                                }
+                                if "usuario_id" in cols:
+                                    conn.execute(
+                                        f"DELETE FROM {tbl} WHERE usuario_id IS NULL OR usuario_id != ?",
+                                        (uid,),
+                                    )
+                        if "usuarios" in existing_tables:
+                            conn.execute("DELETE FROM usuarios WHERE id != ?", (uid,))
+
+                    # Compacta páginas livres do SQLite para remover bytes residuais de outros perfis
+                    conn.execute("VACUUM;")
+                finally:
+                    conn.close()
+
+                pruned_counts = validate_sqlite_file(snap_file)
+                snap_info = {
+                    "sha256": _sha256_file(snap_file),
+                    "size": snap_file.stat().st_size,
+                    "counts": pruned_counts,
+                }
+
             buf = io.BytesIO()
             with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
                 zf.write(snap_file, arcname="financeiro.db")
                 manifest = {
-                    "sistema": "Administração Financeira - Seu Luiz",
+                    "sistema": "Administração Financeira",
                     "exported_at_iso": _iso_utc(time.time()),
                     "db_sha256": snap_info["sha256"],
                     "counts": snap_info["counts"],
+                    "escopo": "perfil_isolado" if usuario_id is not None else "instancia_completa",
                 }
                 zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
                 if self.uploads_dir.is_dir():
                     for up in sorted(self.uploads_dir.iterdir()):
                         if up.is_file() and not up.name.startswith("."):
-                            zf.write(up, arcname=f"uploads/{up.name}")
+                            if up.name in excluded_uploads:
+                                continue
+                            if allowed_uploads is None or up.name in allowed_uploads:
+                                zf.write(up, arcname=f"uploads/{up.name}")
             return buf.getvalue()
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)

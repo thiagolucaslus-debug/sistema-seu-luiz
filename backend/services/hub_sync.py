@@ -280,6 +280,8 @@ class HubSyncClient:
             conn = sqlite3.connect(str(self.db_path), timeout=30.0)
             conn.row_factory = sqlite3.Row
             try:
+                conn.execute("PRAGMA foreign_keys = OFF;")
+
                 def _table_cols(tbl: str) -> list[str]:
                     return [r[1] for r in conn.execute(f"PRAGMA table_info({tbl})").fetchall()]
 
@@ -288,6 +290,133 @@ class HubSyncClient:
                         conn.execute(f"SELECT 1 FROM {tbl} WHERE id = ? LIMIT 1", (pk_val,)).fetchone()
                         is not None
                     )
+
+                tbl_to_kind = {
+                    "contas_bancarias": "conta",
+                    "cartoes": "cartao",
+                    "pessoas": "pessoa",
+                    "modulos": "modulo",
+                    "subcategorias": "subcategoria",
+                    "lancamentos": "lancamento",
+                }
+
+                def _rewrite_outbox_local_id(owner_email: str | None, kind: str, old_id: int, new_id: int) -> None:
+                    if not owner_email or not kind:
+                        return
+                    items = self._load_outbox()
+                    if not items:
+                        return
+                    changed = False
+                    prefix_map = {
+                        "conta": "/contas/",
+                        "cartao": "/cartoes/",
+                        "pessoa": "/pessoas/",
+                        "modulo": "/modulos/",
+                        "lancamento": "/lancamentos/",
+                    }
+                    fk_fields_map = {
+                        "conta": ("conta_id", "conta_destino_id"),
+                        "cartao": ("cartao_id",),
+                        "pessoa": ("pessoa_id",),
+                        "modulo": ("modulo_id",),
+                        "subcategoria": ("subcategoria_id",),
+                    }
+                    for it in items:
+                        if it.get("usuario") != owner_email:
+                            continue
+                        if it.get("entity_kind") == kind and it.get("local_created_id") == old_id:
+                            it["local_created_id"] = new_id
+                            changed = True
+                        pfx = prefix_map.get(kind)
+                        p_str = str(it.get("path") or "")
+                        if pfx and p_str.startswith(pfx):
+                            rest = p_str[len(pfx):]
+                            seg = rest.split("/", 1)[0]
+                            if seg.isdigit() and int(seg) == old_id:
+                                suffix = ("/" + rest.split("/", 1)[1]) if "/" in rest else ""
+                                it["path"] = f"{pfx}{new_id}{suffix}"
+                                changed = True
+                        ct_str = str(it.get("content_type") or "").lower()
+                        b64_str = str(it.get("body_b64") or "")
+                        if "application/json" in ct_str and b64_str and kind in fk_fields_map:
+                            try:
+                                j_obj = json.loads(base64.b64decode(b64_str).decode("utf-8"))
+                                if isinstance(j_obj, dict):
+                                    j_mod = False
+                                    for fk_f in fk_fields_map[kind]:
+                                        if j_obj.get(fk_f) == old_id:
+                                            j_obj[fk_f] = new_id
+                                            j_mod = True
+                                    if j_mod:
+                                        raw_new = json.dumps(j_obj, ensure_ascii=False).encode("utf-8")
+                                        it["body_b64"] = base64.b64encode(raw_new).decode("ascii")
+                                        changed = True
+                            except Exception:
+                                pass
+                    if changed:
+                        self._save_outbox(items)
+
+                def _vacate_conflicting_pk(tbl: str, conflict_id: int) -> None:
+                    if not _pk_taken(tbl, conflict_id):
+                        return
+                    cols = _table_cols(tbl)
+                    owner_email: str | None = None
+                    if "usuario_id" in cols:
+                        r_own = conn.execute(
+                            f"SELECT u.email FROM {tbl} t JOIN usuarios u ON u.id = t.usuario_id WHERE t.id = ? LIMIT 1",
+                            (conflict_id,),
+                        ).fetchone()
+                        if r_own and r_own[0]:
+                            owner_email = str(r_own[0]).strip().lower()
+                    elif tbl == "subcategorias":
+                        r_own = conn.execute(
+                            "SELECT u.email FROM subcategorias s JOIN modulos m ON m.id = s.modulo_id JOIN usuarios u ON u.id = m.usuario_id WHERE s.id = ? LIMIT 1",
+                            (conflict_id,),
+                        ).fetchone()
+                        if r_own and r_own[0]:
+                            owner_email = str(r_own[0]).strip().lower()
+
+                    max_row = conn.execute(f"SELECT COALESCE(MAX(id), 0) FROM {tbl}").fetchone()
+                    new_id = max(int(max_row[0] if max_row else 0) + 1, 900000)
+                    while _pk_taken(tbl, new_id):
+                        new_id += 1
+
+                    conn.execute(f"UPDATE {tbl} SET id = ? WHERE id = ?", (new_id, conflict_id))
+                    fk_updates: dict[str, list[tuple[str, str]]] = {
+                        "contas_bancarias": [
+                            ("lancamentos", "conta_id"),
+                            ("lancamentos", "conta_destino_id"),
+                            ("pagamentos_pessoa", "conta_id"),
+                            ("pagamentos_fatura", "conta_id"),
+                        ],
+                        "cartoes": [
+                            ("lancamentos", "cartao_id"),
+                            ("pagamentos_fatura", "cartao_id"),
+                            ("solicitacoes_lancamento", "cartao_id"),
+                        ],
+                        "pessoas": [
+                            ("lancamentos", "pessoa_id"),
+                            ("pagamentos_pessoa", "pessoa_id"),
+                            ("solicitacoes_lancamento", "pessoa_id"),
+                        ],
+                        "modulos": [
+                            ("subcategorias", "modulo_id"),
+                            ("lancamentos", "modulo_id"),
+                        ],
+                        "subcategorias": [
+                            ("lancamentos", "subcategoria_id"),
+                        ],
+                        "lancamentos": [
+                            ("parcelas", "lancamento_id"),
+                            ("solicitacoes_lancamento", "lancamento_id"),
+                        ],
+                    }
+                    for child_tbl, fk_col in fk_updates.get(tbl, []):
+                        conn.execute(
+                            f"UPDATE {child_tbl} SET {fk_col} = ? WHERE {fk_col} = ?",
+                            (new_id, conflict_id),
+                        )
+                    _rewrite_outbox_local_id(owner_email, tbl_to_kind.get(tbl, ""), conflict_id, new_id)
 
                 with conn:
                     existing_u = conn.execute(
@@ -398,6 +527,8 @@ class HubSyncClient:
                                     (r["token_acesso"],),
                                 )
 
+                            # Realoca qualquer registro offline colidente de outro usuário local para preservar 1:1 o ID canônico do Hub
+                            _vacate_conflicting_pk(tbl, orig_id)
                             use_explicit_id = not _pk_taken(tbl, orig_id)
                             ins_cols = [
                                 c for c in cols if (use_explicit_id or c != "id") and c in r
@@ -528,10 +659,12 @@ class HubSyncClient:
             "cartao": {},
             "pessoa": {},
             "modulo": {},
+            "subcategoria": {},
+            "lancamento": {},
         }
         remaining_for_user: list[dict[str, Any]] = []
         current_tok = render_token
-        replayed_any = False
+        drained_any = False
 
         for idx, item in enumerate(user_items):
             raw_body = base64.b64decode(item.get("body_b64") or "")
@@ -546,6 +679,7 @@ class HubSyncClient:
                 ("cartao", "/cartoes/"),
                 ("pessoa", "/pessoas/"),
                 ("modulo", "/modulos/"),
+                ("lancamento", "/lancamentos/"),
             ):
                 if path.startswith(prefix):
                     rest = path[len(prefix) :]
@@ -565,6 +699,7 @@ class HubSyncClient:
                             ("cartao_id", "cartao"),
                             ("pessoa_id", "pessoa"),
                             ("modulo_id", "modulo"),
+                            ("subcategoria_id", "subcategoria"),
                         ):
                             val = j_obj.get(fk_field)
                             if isinstance(val, int) and val in id_remaps[kind]:
@@ -593,8 +728,12 @@ class HubSyncClient:
                     method, pq, headers=hdrs, data=raw_body, timeout=15.0
                 )
 
+            if code in (408, 429):
+                remaining_for_user.extend(user_items[idx:])
+                break
+
+            drained_any = True
             if 200 <= code < 300:
-                replayed_any = True
                 loc_id = item.get("local_created_id")
                 ekind = item.get("entity_kind")
                 if loc_id is not None and ekind in id_remaps:
@@ -607,7 +746,7 @@ class HubSyncClient:
 
         with self._lock:
             self._save_outbox(other_items + remaining_for_user)
-        return replayed_any, current_tok
+        return drained_any, current_tok
 
     # =========================================================================
     # Fluxos Principais: Check-Setup, Login, Register, Leitura e Escrita
@@ -873,6 +1012,10 @@ def _infer_entity_kind(method: str, path: str) -> str | None:
         "/pessoas": "pessoa",
         "/modulos/": "modulo",
         "/modulos": "modulo",
+        "/modulos/subcategorias": "subcategoria",
+        "/modulos/subcategorias/": "subcategoria",
+        "/lancamentos/": "lancamento",
+        "/lancamentos": "lancamento",
     }
     return mapping.get(path)
 

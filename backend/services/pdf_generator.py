@@ -24,7 +24,7 @@ def fmt_brl(val: float) -> str:
     s = f"{val:,.2f}"
     return "R$ " + s.replace(",", "X").replace(".", ",").replace("X", ".")
 
-def gerar_pdf_fechamento(db: Session, pessoa_id: int, mes: int, ano: int, nome_sistema: str = "Seu Luiz") -> str:
+def gerar_pdf_fechamento(db: Session, pessoa_id: int, mes: int, ano: int, nome_sistema: str = "Administração Financeira") -> str:
     pessoa = db.query(models.Pessoa).filter(models.Pessoa.id == pessoa_id).first()
     if not pessoa:
         raise ValueError("Pessoa não encontrada")
@@ -107,10 +107,12 @@ def gerar_pdf_fechamento(db: Session, pessoa_id: int, mes: int, ano: int, nome_s
 
     story = []
 
+    nome_sistema_safe = escape(str(nome_sistema or "Administração Financeira"))
+
     # 1. Cabeçalho Principal
     header_content = [
         [
-            Paragraph(f'<font size="18" color="white"><b>{nome_sistema}</b></font><br/><font size="9" color="#93C5FD">Sistema de Gestão Financeira Pessoal</font>',
+            Paragraph(f'<font size="18" color="white"><b>{nome_sistema_safe}</b></font><br/><font size="9" color="#93C5FD">Sistema de Gestão Financeira Pessoal</font>',
                       ParagraphStyle("HeadLeft", alignment=TA_LEFT, leading=18)),
             Paragraph(f'<font size="13" color="white"><b>EXTRATO DE FECHAMENTO</b></font><br/><font size="10" color="#DBEAFE">{MESES_PT[mes].upper()} / {ano}</font>',
                       ParagraphStyle("HeadRight", alignment=TA_RIGHT, leading=15))
@@ -128,9 +130,9 @@ def gerar_pdf_fechamento(db: Session, pessoa_id: int, mes: int, ano: int, nome_s
     # 2. Caixa de Identificação da Pessoa
     pessoa_content = [
         [
-            Paragraph(f'<font size="10" color="#4B5563">TITULAR DO LANÇAMENTO</font><br/><font size="14" color="#111827"><b>{pessoa.nome.upper()}</b></font>',
+            Paragraph(f'<font size="10" color="#4B5563">TITULAR DO LANÇAMENTO</font><br/><font size="14" color="#111827"><b>{escape(pessoa.nome.upper())}</b></font>',
                       ParagraphStyle("PessoaNome", leading=16)),
-            Paragraph(f'<font size="10" color="#4B5563">CONTATO</font><br/><font size="11" color="#111827">{pessoa.telefone or "Não informado"}</font>',
+            Paragraph(f'<font size="10" color="#4B5563">CONTATO</font><br/><font size="11" color="#111827">{escape(pessoa.telefone or "Não informado")}</font>',
                       ParagraphStyle("PessoaTel", alignment=TA_RIGHT, leading=16))
         ]
     ]
@@ -179,10 +181,10 @@ def gerar_pdf_fechamento(db: Session, pessoa_id: int, mes: int, ano: int, nome_s
 
         for item in lancamentos_mes:
             t_rows.append([
-                Paragraph(item["data"], ParagraphStyle("TD", fontSize=8.5, textColor=COR_CINZA_ESCURO)),
-                Paragraph(item["descricao"], ParagraphStyle("TD", fontSize=8.5, textColor=COR_CINZA_ESCURO)),
-                Paragraph(item["origem"], ParagraphStyle("TD", fontSize=8.5, textColor=COR_CINZA_ESCURO)),
-                Paragraph(item["parcela"], ParagraphStyle("TD", fontSize=8.5, textColor=COR_CINZA_ESCURO, alignment=TA_CENTER)),
+                Paragraph(escape(str(item["data"])), ParagraphStyle("TD", fontSize=8.5, textColor=COR_CINZA_ESCURO)),
+                Paragraph(escape(str(item["descricao"])), ParagraphStyle("TD", fontSize=8.5, textColor=COR_CINZA_ESCURO)),
+                Paragraph(escape(str(item["origem"])), ParagraphStyle("TD", fontSize=8.5, textColor=COR_CINZA_ESCURO)),
+                Paragraph(escape(str(item["parcela"])), ParagraphStyle("TD", fontSize=8.5, textColor=COR_CINZA_ESCURO, alignment=TA_CENTER)),
                 Paragraph(fmt_brl(item["valor"]), ParagraphStyle("TD", fontSize=8.5, textColor=COR_CINZA_ESCURO, alignment=TA_RIGHT, fontName="Helvetica-Bold")),
             ])
 
@@ -308,10 +310,10 @@ def gerar_pdf_fechamento(db: Session, pessoa_id: int, mes: int, ano: int, nome_s
         ]]
         for pf in parcelas_futuras:
             f_rows.append([
-                Paragraph(pf["mes_ano"], ParagraphStyle("TDF", fontSize=8.5, alignment=TA_CENTER, fontName="Helvetica-Bold")),
-                Paragraph(pf["descricao"], ParagraphStyle("TDF", fontSize=8.5)),
-                Paragraph(pf["origem"], ParagraphStyle("TDF", fontSize=8.5)),
-                Paragraph(pf["parcela"], ParagraphStyle("TDF", fontSize=8.5, alignment=TA_CENTER)),
+                Paragraph(escape(str(pf["mes_ano"])), ParagraphStyle("TDF", fontSize=8.5, alignment=TA_CENTER, fontName="Helvetica-Bold")),
+                Paragraph(escape(str(pf["descricao"])), ParagraphStyle("TDF", fontSize=8.5)),
+                Paragraph(escape(str(pf["origem"])), ParagraphStyle("TDF", fontSize=8.5)),
+                Paragraph(escape(str(pf["parcela"])), ParagraphStyle("TDF", fontSize=8.5, alignment=TA_CENTER)),
                 Paragraph(fmt_brl(pf["valor"]), ParagraphStyle("TDF", fontSize=8.5, alignment=TA_RIGHT, fontName="Helvetica-Bold")),
             ])
         t_fut = Table(f_rows, colWidths=[2.2*cm, 6.8*cm, 4.0*cm, 2.0*cm, 2.4*cm])
@@ -330,7 +332,7 @@ def gerar_pdf_fechamento(db: Session, pessoa_id: int, mes: int, ano: int, nome_s
     story.append(Spacer(1, 0.2*cm))
     agora_str = datetime.now().strftime("%d/%m/%Y às %H:%M")
     story.append(Paragraph(
-        f'<font size="8" color="#6B7280">Documento emitido em {agora_str} por {nome_sistema} • Conferência para pagamento.</font>',
+        f'<font size="8" color="#6B7280">Documento emitido em {agora_str} por {nome_sistema_safe} • Conferência para pagamento.</font>',
         ParagraphStyle("Rodape", alignment=TA_CENTER)
     ))
 

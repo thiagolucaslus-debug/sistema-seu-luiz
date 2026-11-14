@@ -661,3 +661,292 @@ def test_bidirectional_pc_mobile_hub_sync_and_offline_outbox_replay(tmp_path: Pa
     assert "Supermercado Camila" in descs_mob
     assert {x["descricao"] for x in lancs_pc1} == descs_mob
     assert {x["descricao"] for x in lancs_pc2} == descs_mob
+
+
+def test_cloud_backup_zip_and_admin_endpoints_strictly_isolated_per_user(tmp_path: Path):
+    import zipfile
+
+    key_b64 = base64.urlsafe_b64encode(os.urandom(32)).decode("ascii").rstrip("=")
+    fake_gh = FakeGitHubVaultAPI()
+    secret = "segredo_isolamento_cloud"
+
+    node = _make_isolated_node(tmp_path, "cloud_iso", vault_http=fake_gh.transport, hydrate_secret=secret)
+    c = node["client"]
+
+    # 1. Proprietário primário (id=1) cria dados sensíveis e hidrata o cofre global
+    r_owner = c.post("/auth/register", json={"nome": "Luiz Titular", "usuario": "luiz_owner", "senha": "owner_secret_password"})
+    assert r_owner.status_code == 200
+    h_owner = {"Authorization": f"Bearer {r_owner.json()['access_token']}"}
+    c.post(
+        "/cartoes/",
+        json={"nome": "Black Secreto Luiz", "bandeira": "Mastercard", "limite": 50000, "dia_fechamento": 10, "dia_vencimento": 17},
+        headers=h_owner,
+    )
+    p_owner = c.post("/pessoas/", json={"nome": "Familiar Luiz", "telefone": "11911112222"}, headers=h_owner).json()
+
+    tiny_png = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\xcf\xc0"
+        b"\x00\x00\x03\x01\x01\x00\xc9\xfe\x92\xef\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    up_owner = c.post(
+        f"/pessoas/{p_owner['id']}/foto",
+        files={"file": ("owner.png", io.BytesIO(tiny_png), "image/png")},
+        headers=h_owner,
+    )
+    assert up_owner.status_code == 200
+    owner_foto_name = Path(up_owner.json()["foto_path"]).name
+
+    assert c.post(
+        "/cloud/vault/hydrate",
+        json={"hydrate_secret": secret, "github_token": "ghp_x", "repo": "owner/secret-vault-repo", "aes_key": key_b64},
+    ).status_code == 200
+
+    # 2. Segundo perfil independente se registra
+    r_sec = c.post("/auth/register", json={"nome": "Maria Isolada", "usuario": "maria_sec", "senha": "maria_password"})
+    assert r_sec.status_code == 200
+    h_sec = {"Authorization": f"Bearer {r_sec.json()['access_token']}"}
+    c.post(
+        "/cartoes/",
+        json={"nome": "Cartao Maria", "bandeira": "Visa", "limite": 3000, "dia_fechamento": 5, "dia_vencimento": 12},
+        headers=h_sec,
+    )
+    p_sec = c.post("/pessoas/", json={"nome": "Cliente Maria", "telefone": "11933334444"}, headers=h_sec).json()
+    up_sec = c.post(
+        f"/pessoas/{p_sec['id']}/foto",
+        files={"file": ("maria.png", io.BytesIO(tiny_png), "image/png")},
+        headers=h_sec,
+    )
+    assert up_sec.status_code == 200
+    maria_foto_name = Path(up_sec.json()["foto_path"]).name
+
+    # 3. Maria NÃO pode desconectar, sobrescrever, restaurar ou exportar credenciais globais
+    assert c.delete("/cloud/disconnect", headers=h_sec).status_code == 403
+    assert c.post("/cloud/restore", json={"force": True}, headers=h_sec).status_code == 403
+    assert c.get("/cloud/export-token", headers=h_sec).status_code == 403
+    assert c.post("/cloud/token", json={"token": "invalido"}, headers=h_sec).status_code == 403
+    assert c.post("/cloud/configure-client", json={"auto_sync_enabled": False}, headers=h_sec).status_code == 403
+    assert c.post("/cloud/oauth/authorize", headers=h_sec).status_code == 403
+
+    # 4. Status de Maria oculta repositório/conta do proprietário e exibe apenas contadores de Maria
+    st_sec = c.get("/cloud/status", headers=h_sec).json()
+    assert st_sec["connected"] is True
+    assert st_sec["is_primary_owner"] is False
+    assert "secret-vault-repo" not in st_sec["account"]
+    assert st_sec["folder_url"] == ""
+    assert st_sec["counts"]["usuarios"] == 1
+    assert st_sec["counts"]["cartoes"] == 1
+
+    st_owner = c.get("/cloud/status", headers=h_owner).json()
+    assert st_owner["is_primary_owner"] is True
+    assert "secret-vault-repo" in st_owner["account"]
+
+    # 5. Backup ZIP de Maria contém EXCLUSIVAMENTE os dados e uploads de Maria (com VACUUM sem resíduos)
+    zip_res = c.get("/cloud/backup-zip", headers=h_sec)
+    assert zip_res.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(zip_res.content), "r") as zf:
+        names = set(zf.namelist())
+        assert f"uploads/{maria_foto_name}" in names
+        assert f"uploads/{owner_foto_name}" not in names
+
+        db_bytes = zf.read("financeiro.db")
+        assert b"Black Secreto Luiz" not in db_bytes
+        assert b"luiz_owner" not in db_bytes
+
+        extracted_db = tmp_path / "maria_only.db"
+        extracted_db.write_bytes(db_bytes)
+        conn = sqlite3.connect(str(extracted_db))
+        try:
+            users = conn.execute("SELECT email FROM usuarios").fetchall()
+            cards = conn.execute("SELECT nome FROM cartoes").fetchall()
+            assert users == [("maria_sec",)]
+            assert cards == [("Cartao Maria",)]
+        finally:
+            conn.close()
+
+    node["cloud_mgr"].shutdown()
+
+
+def test_hub_sync_multiuser_pk_collision_and_outbox_4xx_healing(tmp_path: Path):
+    import time as _t
+
+    hub = _make_isolated_node(tmp_path, "hub_pk", desktop_mode=False)
+    hub_c = hub["client"]
+
+    network_state = {"online": False}
+
+    def hub_bridge(
+        method: str,
+        url: str,
+        headers: dict[str, str] | None = None,
+        data: bytes | None = None,
+        timeout: float = 12.0,
+    ) -> tuple[int, dict[str, str], bytes]:
+        if not network_state["online"]:
+            raise OSError("Sem internet")
+        parsed = urlsplit(url)
+        pq = f"{parsed.path}?{parsed.query}" if parsed.query else parsed.path
+        resp = hub_c.request(method, pq, headers=headers or {}, content=data)
+        return resp.status_code, dict(resp.headers), resp.content
+
+    pc_shared = _make_isolated_node(tmp_path, "pc_shared", desktop_mode=True, hub_transport=hub_bridge)
+    c_pc = pc_shared["client"]
+
+    # 1. PC compartilhado começa OFFLINE: Alice cria perfil local + cartão (id=1) + módulo + subcategoria + lançamento
+    r_alice_off = c_pc.post("/auth/setup", json={"nome": "Alice Offline", "usuario": "alice", "senha": "alice123"})
+    assert r_alice_off.status_code == 200
+    h_alice_pc = {"Authorization": f"Bearer {r_alice_off.json()['access_token']}"}
+
+    alice_card = c_pc.post(
+        "/cartoes/",
+        json={"nome": "Cartao Offline Alice", "bandeira": "Visa", "limite": 4000, "dia_fechamento": 8, "dia_vencimento": 15},
+        headers=h_alice_pc,
+    ).json()
+    assert alice_card["id"] == 1
+
+    alice_mod = c_pc.post("/modulos/", json={"nome": "Estudos Alice", "cor": "#3B82F6"}, headers=h_alice_pc).json()
+    alice_sub = c_pc.post(
+        "/modulos/subcategorias",
+        json={"nome": "Livros Tecnicos", "modulo_id": alice_mod["id"]},
+        headers=h_alice_pc,
+    ).json()
+    alice_lanc = c_pc.post(
+        "/lancamentos/",
+        json={
+            "descricao": "Curso Python Offline",
+            "valor_total": 420.0,
+            "tipo": "compra_cartao",
+            "data_lancamento": date.today().isoformat(),
+            "cartao_id": alice_card["id"],
+            "modulo_id": alice_mod["id"],
+            "subcategoria_id": alice_sub["id"],
+            "total_parcelas": 2,
+        },
+        headers=h_alice_pc,
+    )
+    assert alice_lanc.status_code == 200
+
+    # 2. No Hub em nuvem, Roberto cria o primeiro perfil online -> seu cartão canônico TAMBÉM recebe id=1!
+    r_rob_hub = hub_c.post("/auth/register", json={"nome": "Roberto Online", "usuario": "roberto", "senha": "rob123"})
+    assert r_rob_hub.status_code == 200
+    h_rob_hub = {"Authorization": f"Bearer {r_rob_hub.json()['access_token']}"}
+    rob_card_hub = hub_c.post(
+        "/cartoes/",
+        json={"nome": "Nubank Roberto Canonico", "bandeira": "Mastercard", "limite": 9000, "dia_fechamento": 10, "dia_vencimento": 17},
+        headers=h_rob_hub,
+    ).json()
+    assert rob_card_hub["id"] == 1
+
+    # 3. Internet volta no PC compartilhado e ROBERTO entra PRIMEIRO (antes de Alice sincronizar!)
+    network_state["online"] = True
+    _t.sleep(0.08)
+
+    log_rob_pc = c_pc.post("/auth/login", json={"usuario": "roberto", "senha": "rob123"})
+    assert log_rob_pc.status_code == 200
+    h_rob_pc = {"Authorization": f"Bearer {log_rob_pc.json()['access_token']}"}
+
+    rob_cards_pc = c_pc.get("/cartoes/", headers=h_rob_pc).json()
+    assert len(rob_cards_pc) == 1
+    # ID canônico 1 do Hub foi preservado 1:1 para Roberto!
+    assert rob_cards_pc[0]["id"] == 1
+    assert rob_cards_pc[0]["nome"] == "Nubank Roberto Canonico"
+
+    # Roberto edita seu cartão id=1 e lança compra nele pelo PC -> funciona sem 404/400 no Hub!
+    upd_rob = c_pc.put(
+        "/cartoes/1",
+        json={"nome": "Nubank Roberto Editado PC", "bandeira": "Mastercard", "limite": 11000, "dia_fechamento": 10, "dia_vencimento": 17},
+        headers=h_rob_pc,
+    )
+    assert upd_rob.status_code == 200
+    lanc_rob = c_pc.post(
+        "/lancamentos/",
+        json={
+            "descricao": "Jantar Roberto PC",
+            "valor_total": 180.0,
+            "tipo": "compra_cartao",
+            "data_lancamento": date.today().isoformat(),
+            "cartao_id": 1,
+            "total_parcelas": 1,
+        },
+        headers=h_rob_pc,
+    )
+    assert lanc_rob.status_code == 200
+    assert hub_c.get("/cartoes/", headers=h_rob_hub).json()[0]["nome"] == "Nubank Roberto Editado PC"
+
+    # 4. Agora ALICE acessa o PC -> auto-provisiona no Hub e faz replay limpo dos itens realocados (cartão + módulo + subcategoria + lançamento)!
+    log_alice_pc = c_pc.post("/auth/login", json={"usuario": "alice", "senha": "alice123"})
+    assert log_alice_pc.status_code == 200
+    h_alice_pc2 = {"Authorization": f"Bearer {log_alice_pc.json()['access_token']}"}
+    assert pc_shared["hub_client"]._load_outbox() == []
+
+    log_alice_hub = hub_c.post("/auth/login", json={"usuario": "alice", "senha": "alice123"})
+    assert log_alice_hub.status_code == 200
+    h_alice_hub = {"Authorization": f"Bearer {log_alice_hub.json()['access_token']}"}
+    alice_lancs_hub = hub_c.get("/lancamentos/", headers=h_alice_hub).json()["items"]
+    assert [x["descricao"] for x in alice_lancs_hub] == ["Curso Python Offline"]
+    assert [x["descricao"] for x in c_pc.get("/lancamentos/", headers=h_alice_pc2).json()["items"]] == ["Curso Python Offline"]
+
+    # 5. Se um item offline obsoleto retornar 404 no Hub, o PC drena a fila e cura o SQLite local via snapshot!
+    conn = sqlite3.connect(str(pc_shared["db_path"]))
+    try:
+        with conn:
+            conn.execute("DELETE FROM cartoes WHERE nome = 'Cartao Offline Alice'")
+    finally:
+        conn.close()
+    pc_shared["hub_client"].enqueue_offline_mutation(
+        usuario="alice",
+        method="DELETE",
+        path="/cartoes/999999",
+        query="",
+        content_type="application/json",
+        raw_body=b"",
+    )
+    healed_cards = c_pc.get("/cartoes/", headers=h_alice_pc2).json()
+    assert [x["nome"] for x in healed_cards] == ["Cartao Offline Alice"]
+    assert pc_shared["hub_client"]._load_outbox() == []
+
+
+def test_pdf_fechamento_escapes_xml_special_characters(tmp_path: Path):
+    node = _make_isolated_node(tmp_path, "pdf_xml")
+    c = node["client"]
+
+    reg = c.post(
+        "/auth/register",
+        json={"nome": "Lucas & Ana <Gestão>", "usuario": "lucas_xml", "senha": "123456"},
+    )
+    assert reg.status_code == 200
+    hdrs = {"Authorization": f"Bearer {reg.json()['access_token']}"}
+
+    card = c.post(
+        "/cartoes/",
+        json={"nome": "C&A <Gold>", "bandeira": "Visa", "limite": 5000, "dia_fechamento": 10, "dia_vencimento": 17},
+        headers=hdrs,
+    ).json()
+    pes = c.post(
+        "/pessoas/",
+        json={"nome": "João & Maria <Filhos>", "telefone": "(11) 99999-0000 & WhatsApp"},
+        headers=hdrs,
+    ).json()
+    hoje = date.today()
+    lanc = c.post(
+        "/lancamentos/",
+        json={
+            "descricao": "Roupas C&A & H&M <Promoção>",
+            "valor_total": 350.0,
+            "tipo": "compra_cartao",
+            "data_lancamento": hoje.isoformat(),
+            "cartao_id": card["id"],
+            "pessoa_id": pes["id"],
+            "total_parcelas": 3,
+        },
+        headers=hdrs,
+    )
+    assert lanc.status_code == 200
+
+    pdf_auth = c.get(f"/pessoas/{pes['id']}/pdf/{hoje.month}/{hoje.year}", headers=hdrs)
+    assert pdf_auth.status_code == 200
+    assert pdf_auth.content.startswith(b"%PDF")
+
+    pdf_pub = c.get(f"/public/fechamento/{pes['token_acesso']}/{hoje.month}/{hoje.year}/pdf")
+    assert pdf_pub.status_code == 200
+    assert pdf_pub.content.startswith(b"%PDF")

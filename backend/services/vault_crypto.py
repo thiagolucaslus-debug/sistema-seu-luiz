@@ -95,6 +95,12 @@ def merge_missing_users_sqlite(base_db_path: Path, extra_db_path: Path) -> int:
             str(r["email"]).strip().lower()
             for r in base_conn.execute("SELECT email FROM usuarios").fetchall()
         }
+        existing_tokens = {
+            str(r[0])
+            for r in base_conn.execute(
+                "SELECT token_acesso FROM pessoas WHERE token_acesso IS NOT NULL AND token_acesso != ''"
+            ).fetchall()
+        } if "pessoas" in base_tables else set()
         extra_users = extra_conn.execute("SELECT * FROM usuarios ORDER BY id ASC").fetchall()
         new_users = [
             u for u in extra_users if str(u["email"]).strip().lower() not in existing_emails
@@ -138,7 +144,18 @@ def merge_missing_users_sqlite(base_db_path: Path, extra_db_path: Path) -> int:
                     for row in extra_conn.execute(
                         f"SELECT * FROM {tbl} WHERE usuario_id = ? ORDER BY id ASC", (old_uid,)
                     ).fetchall():
-                        vals = [new_uid if c == "usuario_id" else row[c] for c in b_cols]
+                        vals = []
+                        for c in b_cols:
+                            if c == "usuario_id":
+                                vals.append(new_uid)
+                            elif tbl == "pessoas" and c == "token_acesso":
+                                tok_val = str(row[c] or "").strip()
+                                if not tok_val or tok_val in existing_tokens:
+                                    tok_val = secrets.token_urlsafe(12)
+                                existing_tokens.add(tok_val)
+                                vals.append(tok_val)
+                            else:
+                                vals.append(row[c])
                         c_ins = base_conn.execute(
                             f"INSERT INTO {tbl} ({', '.join(b_cols)}) VALUES ({', '.join('?' for _ in b_cols)})",
                             vals,

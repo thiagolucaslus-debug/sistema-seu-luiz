@@ -116,12 +116,115 @@ def _oauth_result_html(ok: bool, title: str, message: str) -> HTMLResponse:
     )
 
 
+def _is_primary_owner(usuario: models.Usuario, mgr: CloudSyncManager) -> bool:
+    if not mgr.db_path.is_file():
+        return True
+    conn = sqlite3.connect(str(mgr.db_path), timeout=10.0)
+    try:
+        row = conn.execute("SELECT id FROM usuarios ORDER BY id ASC LIMIT 1").fetchone()
+        if not row:
+            return True
+        return int(row[0]) == int(usuario.id)
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
+def _require_primary_owner(usuario: models.Usuario, mgr: CloudSyncManager) -> None:
+    if not _is_primary_owner(usuario, mgr):
+        raise HTTPException(
+            status_code=403,
+            detail="Apenas o administrador principal pode alterar ou desconectar a configuração global de nuvem.",
+        )
+
+
+def _user_scoped_counts(usuario_id: int, mgr: CloudSyncManager) -> tuple[dict[str, int], int]:
+    counts = {"usuarios": 1}
+    if not mgr.db_path.is_file():
+        return counts, 0
+    conn = sqlite3.connect(str(mgr.db_path), timeout=10.0)
+    try:
+        tables = {
+            r[0]
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
+        for tbl in (
+            "contas_bancarias",
+            "cartoes",
+            "pessoas",
+            "modulos",
+            "lancamentos",
+            "pagamentos_pessoa",
+            "pagamentos_fatura",
+            "solicitacoes_lancamento",
+        ):
+            if tbl in tables:
+                cols = {r[1] for r in conn.execute(f"PRAGMA table_info({tbl})").fetchall()}
+                if "usuario_id" in cols:
+                    counts[tbl] = int(
+                        conn.execute(
+                            f"SELECT COUNT(*) FROM {tbl} WHERE usuario_id = ?", (int(usuario_id),)
+                        ).fetchone()[0]
+                    )
+        if "subcategorias" in tables and "modulos" in tables:
+            counts["subcategorias"] = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM subcategorias WHERE modulo_id IN (SELECT id FROM modulos WHERE usuario_id = ?)",
+                    (int(usuario_id),),
+                ).fetchone()[0]
+            )
+        if "parcelas" in tables and "lancamentos" in tables:
+            counts["parcelas"] = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM parcelas WHERE lancamento_id IN (SELECT id FROM lancamentos WHERE usuario_id = ?)",
+                    (int(usuario_id),),
+                ).fetchone()[0]
+            )
+        rels: set[str] = set()
+        for tbl, col, wh in (
+            ("usuarios", "logo_path", "id = ?"),
+            ("pessoas", "foto_path", "usuario_id = ?"),
+            ("modulos", "foto_path", "usuario_id = ?"),
+            ("lancamentos", "comprovante_path", "usuario_id = ?"),
+            ("solicitacoes_lancamento", "comprovante_path", "usuario_id = ?"),
+        ):
+            if tbl in tables:
+                cols = {r[1] for r in conn.execute(f"PRAGMA table_info({tbl})").fetchall()}
+                if col in cols:
+                    for (val,) in conn.execute(
+                        f"SELECT {col} FROM {tbl} WHERE {wh} AND {col} IS NOT NULL",
+                        (int(usuario_id),),
+                    ).fetchall():
+                        if isinstance(val, str) and val.strip():
+                            rels.add(val.strip())
+        return counts, len(rels)
+    except Exception:
+        return counts, 0
+    finally:
+        conn.close()
+
+
+def _scoped_status_for_user(usuario: models.Usuario, mgr: CloudSyncManager) -> dict[str, Any]:
+    st = mgr.status()
+    if _is_primary_owner(usuario, mgr):
+        st["is_primary_owner"] = True
+        return st
+    user_counts, user_uploads = _user_scoped_counts(usuario.id, mgr)
+    st["is_primary_owner"] = False
+    st["account"] = "Nuvem Automática 24/7 (Perfil Isolado)" if st.get("connected") else ""
+    st["folder_url"] = ""
+    st["counts"] = user_counts
+    st["uploads_synced_count"] = user_uploads
+    return st
+
+
 @router.get("/status")
 def obter_status_nuvem(
     usuario: models.Usuario = Depends(auth.get_usuario_atual),
     mgr: CloudSyncManager = Depends(get_cloud_manager),
 ):
-    return mgr.status()
+    return _scoped_status_for_user(usuario, mgr)
 
 
 @router.post("/configure-client")
@@ -130,6 +233,7 @@ def configurar_cliente_oauth(
     usuario: models.Usuario = Depends(auth.get_usuario_atual),
     mgr: CloudSyncManager = Depends(get_cloud_manager),
 ):
+    _require_primary_owner(usuario, mgr)
     try:
         return mgr.configure_custom_client(payload)
     except ValueError as exc:
@@ -142,6 +246,7 @@ def iniciar_autorizacao_google(
     usuario: models.Usuario = Depends(auth.get_usuario_atual),
     mgr: CloudSyncManager = Depends(get_cloud_manager),
 ):
+    _require_primary_owner(usuario, mgr)
     try:
         redirect_uri = _resolve_redirect_uri(request)
         return mgr.start_oauth(redirect_uri=redirect_uri)
@@ -223,6 +328,7 @@ def importar_token_nuvem(
     usuario: models.Usuario = Depends(auth.get_usuario_atual),
     mgr: CloudSyncManager = Depends(get_cloud_manager),
 ):
+    _require_primary_owner(usuario, mgr)
     user_email = str(usuario.email or "")
     _release_user_session(usuario)
     try:
@@ -247,6 +353,7 @@ def exportar_token_nuvem(
     usuario: models.Usuario = Depends(auth.get_usuario_atual),
     mgr: CloudSyncManager = Depends(get_cloud_manager),
 ):
+    _require_primary_owner(usuario, mgr)
     try:
         return mgr.export_oauth_token()
     except ValueError as exc:
@@ -261,15 +368,18 @@ def sincronizar_agora(
     if not mgr.is_connected():
         raise HTTPException(
             status_code=400,
-            detail="Conecte sua conta Google Drive antes de enviar o backup.",
+            detail="Conecte sua conta de nuvem antes de enviar o backup.",
         )
+    user_id = int(usuario.id)
+    user_email = str(usuario.email or "")
     try:
-        result = mgr.sync_now(force=True, reason=f"manual_{usuario.email}")
-        status_now = mgr.status()
+        result = mgr.sync_now(force=True, reason=f"manual_{user_email}")
+        detached = models.Usuario(id=user_id, email=user_email)
+        status_now = _scoped_status_for_user(detached, mgr)
         status_now["sync_result"] = result
         return status_now
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Falha ao salvar no Google Drive: {exc}") from exc
+        raise HTTPException(status_code=502, detail=f"Falha ao salvar na nuvem: {exc}") from exc
 
 
 @router.post("/restore")
@@ -278,6 +388,7 @@ def restaurar_agora(
     usuario: models.Usuario = Depends(auth.get_usuario_atual),
     mgr: CloudSyncManager = Depends(get_cloud_manager),
 ):
+    _require_primary_owner(usuario, mgr)
     if not mgr.is_connected():
         raise HTTPException(
             status_code=400,
@@ -314,6 +425,7 @@ def desconectar_nuvem(
     usuario: models.Usuario = Depends(auth.get_usuario_atual),
     mgr: CloudSyncManager = Depends(get_cloud_manager),
 ):
+    _require_primary_owner(usuario, mgr)
     return mgr.disconnect()
 
 
@@ -322,12 +434,16 @@ def baixar_backup_zip(
     usuario: models.Usuario = Depends(auth.get_usuario_atual),
     mgr: CloudSyncManager = Depends(get_cloud_manager),
 ):
+    is_owner = _is_primary_owner(usuario, mgr)
     try:
-        zip_bytes = mgr.export_backup_zip_bytes()
+        zip_bytes = mgr.export_backup_zip_bytes(
+            usuario_id=int(usuario.id),
+            include_unclaimed_uploads=is_owner,
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Erro ao gerar pacote de backup: {exc}") from exc
     stamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
-    filename = f"backup_sistema_seu_luiz_{stamp}.zip"
+    filename = f"backup_administracao_financeira_{stamp}.zip"
     return Response(
         content=zip_bytes,
         media_type="application/zip",
