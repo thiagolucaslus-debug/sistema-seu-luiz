@@ -29,13 +29,59 @@ let backendPort = 0;
 let serverUrl = '';
 let isQuitting = false;
 
+function copyDirFilesIfMissing(srcDir, dstDir) {
+  if (!fs.existsSync(srcDir)) return;
+  fs.mkdirSync(dstDir, { recursive: true });
+  for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
+    const s = path.join(srcDir, entry.name);
+    const d = path.join(dstDir, entry.name);
+    if (entry.isFile() && !fs.existsSync(d)) {
+      try { fs.copyFileSync(s, d); } catch (_) {}
+    }
+  }
+}
+
 function resolveUserDataDir() {
   if (process.env.SEU_LUIZ_DATA_DIR && process.env.SEU_LUIZ_DATA_DIR.trim()) {
     return path.resolve(process.env.SEU_LUIZ_DATA_DIR.trim());
   }
   const localApp = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
-  return path.join(localApp, 'AdministracaoFinanceira');
+  const defaultAppData = path.join(localApp, 'AdministracaoFinanceira');
+
+  // Quando instalado em outro disco (ex.: D:\AdministracaoFinanceira), armazena banco,
+  // uploads, PDFs e cache diretamente no disco escolhido (preservando espaco no C:\)
+  // e migra automaticamente dados pre-existentes de %LOCALAPPDATA%\AdministracaoFinanceira.
+  if (app.isPackaged) {
+    try {
+      const exeDir = path.dirname(process.execPath);
+      const driveRoot = (path.parse(exeDir).root || '').toUpperCase();
+      if (driveRoot && driveRoot !== 'C:\\') {
+        const driveDataDir = path.join(exeDir, 'dados');
+        fs.mkdirSync(driveDataDir, { recursive: true });
+        const probe = path.join(driveDataDir, '.write_probe');
+        fs.writeFileSync(probe, 'ok');
+        fs.unlinkSync(probe);
+
+        const dstDb = path.join(driveDataDir, 'financeiro.db');
+        const srcDb = path.join(defaultAppData, 'financeiro.db');
+        if (!fs.existsSync(dstDb) && fs.existsSync(srcDb)) {
+          fs.copyFileSync(srcDb, dstDb);
+          copyDirFilesIfMissing(path.join(defaultAppData, 'uploads'), path.join(driveDataDir, 'uploads'));
+          copyDirFilesIfMissing(path.join(defaultAppData, 'backups_seguranca'), path.join(driveDataDir, 'backups_seguranca'));
+        }
+        return driveDataDir;
+      }
+    } catch (_) {}
+  }
+  return defaultAppData;
 }
+
+try {
+  const initialDataRoot = resolveUserDataDir();
+  const customChromiumProfile = path.join(initialDataRoot, 'electron_profile');
+  fs.mkdirSync(customChromiumProfile, { recursive: true });
+  app.setPath('userData', customChromiumProfile);
+} catch (_) {}
 
 function resolveEngineRoot() {
   if (app.isPackaged) {
@@ -251,6 +297,7 @@ async function startBackend(forceRestart = false) {
     SEU_LUIZ_NO_BROWSER: '1',
     SEU_LUIZ_DESKTOP_MODE: '1',
     SEU_LUIZ_DATA_DIR: userDataDir,
+    SEU_LUIZ_CLOUD_CONFIG_DIR: userDataDir,
     SEU_LUIZ_HUB_URL: process.env.SEU_LUIZ_HUB_URL || DEFAULT_HUB_URL,
   };
 

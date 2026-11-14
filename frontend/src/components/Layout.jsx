@@ -87,9 +87,14 @@ export default function Layout({ children }) {
         {/* Cabeçalho do menu */}
         <div className="app-brand flex items-center justify-between">
           <Link to="/" className="flex items-center gap-3 min-w-0" onClick={() => setSidebarOpen(false)}>
-            <Avatar nome={nome} foto={foto} className="avatar--brand" />
+            <img
+              src="/logo-oficial.png"
+              alt="Administração Financeira"
+              className="w-12 h-12 object-contain shrink-0 select-none drop-shadow"
+              draggable={false}
+            />
             <div className="min-w-0">
-              <p className="text-white font-bold text-lg leading-tight truncate">{nome}</p>
+              <p className="text-white font-bold text-base leading-tight truncate">{nome}</p>
               <p className="app-brand__subtitle">Administração Financeira</p>
             </div>
           </Link>
@@ -204,7 +209,12 @@ export default function Layout({ children }) {
               <Menu size={22} />
             </button>
             <Link to="/" className="flex items-center gap-2 min-w-0">
-              <Avatar nome={nome} foto={foto} className="w-8 h-8 rounded-full" />
+              <img
+                src="/logo-oficial.png"
+                alt="Administração Financeira"
+                className="w-9 h-9 object-contain shrink-0 select-none"
+                draggable={false}
+              />
               <span className="font-bold text-white text-base truncate">{nome}</span>
             </Link>
           </div>

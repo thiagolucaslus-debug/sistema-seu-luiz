@@ -13,7 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 
 DESKTOP_DIR = Path(__file__).resolve().parent
 REPO_ROOT = DESKTOP_DIR.parent
@@ -24,68 +24,50 @@ ENGINE_CLEAN_DIR = DESKTOP_DIR / "app_engine_clean"
 
 
 def generate_icons() -> None:
-    size = 512
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
+    logo_src = REPO_ROOT / "frontend" / "public" / "logo-oficial.png"
+    if not logo_src.is_file():
+        raise FileNotFoundError(f"Logotipo oficial nao encontrada em: {logo_src}")
+    cropped = Image.open(logo_src).convert("RGBA")
+    cw, ch = cropped.size
 
-    # Fundo arredondado azul-marinho profundo com borda esmeralda
-    pad = 24
-    draw.rounded_rectangle(
-        [pad, pad, size - pad, size - pad],
-        radius=112,
-        fill=(13, 25, 48, 255),
-        outline=(16, 185, 129, 255),
-        width=14,
-    )
+    def make_square(size: int, pad_ratio: float = 0.02) -> Image.Image:
+        canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        usable = int(size * (1.0 - 2 * pad_ratio))
+        scale = min(usable / cw, usable / ch)
+        nw, nh = max(1, round(cw * scale)), max(1, round(ch * scale))
+        resized = cropped.resize((nw, nh), Image.Resampling.LANCZOS)
+        canvas.alpha_composite(resized, ((size - nw) // 2, (size - nh) // 2))
+        return canvas
 
-    # Barra de destaque superior interna esmeralda/ciano
-    draw.rounded_rectangle(
-        [pad + 36, pad + 38, size - pad - 36, pad + 58],
-        radius=10,
-        fill=(16, 185, 129, 230),
-    )
-
-    # Texto "AF" centralizado
-    font = None
-    for candidate in (
-        r"C:\Windows\Fonts\segoeuib.ttf",
-        r"C:\Windows\Fonts\arialbd.ttf",
-        r"C:\Windows\Fonts\calibrib.ttf",
-    ):
-        if Path(candidate).is_file():
-            font = ImageFont.truetype(candidate, 220)
-            break
-    if font is None:
-        font = ImageFont.load_default()
-
-    text = "AF"
-    bbox = draw.textbbox((0, 0), text, font=font)
-    tw = bbox[2] - bbox[0]
-    th = bbox[3] - bbox[1]
-    tx = (size - tw) // 2 - bbox[0]
-    ty = (size - th) // 2 - bbox[1] + 18
-
-    draw.text((tx + 4, ty + 6), text, font=font, fill=(0, 0, 0, 120))
-    draw.text((tx, ty), text, font=font, fill=(248, 250, 252, 255))
-
-    png_256 = img.resize((256, 256), Image.Resampling.LANCZOS)
     png_path = DESKTOP_DIR / "icon.png"
     ico_path = DESKTOP_DIR / "icon.ico"
-    png_256.save(png_path, format="PNG")
-    img.save(
+    make_square(256).save(png_path, format="PNG", optimize=True)
+    make_square(512).save(
         ico_path,
         format="ICO",
         sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
     )
-    print(f"[OK] Icones gerados: {ico_path} ({ico_path.stat().st_size} bytes)")
+    print(f"[OK] Icones oficiais gerados: {ico_path} ({ico_path.stat().st_size} bytes)")
+
+
+def _reset_dir(target: Path) -> None:
+    if target.exists():
+        for child in list(target.iterdir()):
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child, ignore_errors=True)
+            else:
+                try:
+                    child.unlink()
+                except OSError:
+                    shutil.rmtree(child, ignore_errors=True)
+    else:
+        target.mkdir(parents=True, exist_ok=True)
 
 
 def build_python_runtime() -> None:
     base_py = Path(sys.executable).resolve().parent
     print(f"[INFO] Construindo python_runtime limpo a partir de: {base_py}")
-    if PY_RUNTIME_DIR.exists():
-        shutil.rmtree(PY_RUNTIME_DIR)
-    PY_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    _reset_dir(PY_RUNTIME_DIR)
 
     # Copia executaveis e DLLs da raiz do Python 3.12
     for item in base_py.iterdir():
@@ -175,9 +157,7 @@ def build_python_runtime() -> None:
 
 
 def build_node_runtime() -> None:
-    if NODE_RUNTIME_DIR.exists():
-        shutil.rmtree(NODE_RUNTIME_DIR)
-    NODE_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    _reset_dir(NODE_RUNTIME_DIR)
 
     for cand in (
         Path(r"D:\ROBO EDITOR\desktop\portable_runtime\nodejs\node.exe"),
@@ -191,9 +171,7 @@ def build_node_runtime() -> None:
 
 
 def stage_clean_engine() -> None:
-    if ENGINE_CLEAN_DIR.exists():
-        shutil.rmtree(ENGINE_CLEAN_DIR)
-    ENGINE_CLEAN_DIR.mkdir(parents=True, exist_ok=True)
+    _reset_dir(ENGINE_CLEAN_DIR)
 
     # 1. Launcher
     shutil.copy2(REPO_ROOT / "desktop_launcher.py", ENGINE_CLEAN_DIR / "desktop_launcher.py")

@@ -49,9 +49,12 @@ export default function ModalAcessoCelular({ isOpen, onClose }) {
         {/* Cabeçalho */}
         <div className="flex items-center justify-between pb-4 border-b border-slate-700/60">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-blue-600/20 text-blue-400 flex items-center justify-center">
-              <Smartphone size={22} />
-            </div>
+            <img
+              src="/logo-oficial.png"
+              alt="Administração Financeira"
+              className="w-12 h-12 object-contain shrink-0 select-none drop-shadow"
+              draggable={false}
+            />
             <div>
               <h2 className="text-lg sm:text-xl font-black text-ink tracking-tight">Acesso no Celular 24/7</h2>
               <p className="text-xs text-slate-400">Entre no celular com o mesmo usuário e senha deste PC</p>

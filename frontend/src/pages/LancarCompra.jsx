@@ -158,6 +158,16 @@ export default function LancarCompra() {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 p-4 sm:p-6 flex flex-col items-center justify-center">
       <div className="w-full max-w-lg space-y-5">
+        {/* Logotipo Oficial */}
+        <div className="text-center">
+          <img
+            src="/logo-oficial.png"
+            alt="Administração Financeira"
+            className="w-44 h-auto mx-auto select-none drop-shadow-[0_8px_20px_rgba(245,184,46,0.2)]"
+            draggable={false}
+          />
+        </div>
+
         {/* Identificação da Pessoa */}
         <div className="card p-5 border border-slate-800 bg-slate-900 flex items-center justify-between shadow-xl">
           <div className="flex items-center gap-3.5 min-w-0">

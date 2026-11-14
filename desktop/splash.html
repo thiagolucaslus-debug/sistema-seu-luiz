@@ -11,55 +11,41 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      background: radial-gradient(circle at 50% 35%, #13294b 0%, #09111f 75%);
+      background: radial-gradient(circle at 50% 35%, #13294b 0%, #070d19 75%);
       color: #f1f5f9;
       font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
       user-select: none;
     }
-    .badge-icon {
-      width: 84px;
-      height: 84px;
-      border-radius: 22px;
-      background: linear-gradient(135deg, #10b981 0%, #059669 50%, #0284c7 100%);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 32px;
-      font-weight: 800;
-      letter-spacing: -0.03em;
-      color: #ffffff;
-      box-shadow: 0 14px 38px rgba(16, 185, 129, 0.35);
-      margin-bottom: 20px;
+    .splash-logo {
+      width: 190px;
+      height: 190px;
+      object-fit: contain;
+      filter: drop-shadow(0 14px 32px rgba(245, 184, 46, 0.28));
+      margin-bottom: 14px;
       animation: floatPulse 1.6s ease-in-out infinite;
-    }
-    h1 {
-      font-size: 21px;
-      font-weight: 700;
-      letter-spacing: 0.02em;
-      margin-bottom: 8px;
     }
     p {
       font-size: 13px;
       color: #94a3b8;
     }
     .loader-track {
-      width: 200px;
+      width: 210px;
       height: 4px;
       background: rgba(148, 163, 184, 0.2);
       border-radius: 999px;
       overflow: hidden;
-      margin-top: 20px;
+      margin-top: 18px;
     }
     .loader-bar {
       width: 45%;
       height: 100%;
-      background: linear-gradient(90deg, #10b981, #38bdf8);
+      background: linear-gradient(90deg, #f5b82e, #38bdf8);
       border-radius: 999px;
       animation: slide 1.2s ease-in-out infinite;
     }
     @keyframes floatPulse {
       0%, 100% { transform: translateY(0) scale(1); }
-      50% { transform: translateY(-3px) scale(1.04); }
+      50% { transform: translateY(-3px) scale(1.03); }
     }
     @keyframes slide {
       0% { transform: translateX(-110%); }
@@ -68,8 +54,7 @@
   </style>
 </head>
 <body>
-  <div class="badge-icon">AF</div>
-  <h1>Administração Financeira</h1>
+  <img src="icon.png" alt="Administração Financeira" class="splash-logo" draggable="false" />
   <p>Iniciando painel local integrado e sincronização com celular…</p>
   <div class="loader-track"><div class="loader-bar"></div></div>
 </body>

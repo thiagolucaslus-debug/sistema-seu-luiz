@@ -66,12 +66,15 @@ export default function Login() {
     <div className="login-background min-h-screen flex items-center justify-center p-4">
       <div className="card login-card w-full max-w-md p-8 sm:p-10">
 
-        {/* Logo */}
+        {/* Logo Oficial */}
         <div className="text-center mb-6">
-          <div className="login-mark w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-3 font-black text-2xl select-none bg-gradient-to-tr from-blue-600 to-indigo-600 text-white shadow-lg shadow-blue-500/25">
-            AF
-          </div>
-          <h1 className="text-2xl font-black text-ink tracking-tight">Administração Financeira</h1>
+          <img
+            src="/logo-oficial.png"
+            alt="Administração Financeira"
+            className="w-52 sm:w-60 h-auto mx-auto mb-2 select-none drop-shadow-[0_10px_24px_rgba(245,184,46,0.22)]"
+            draggable={false}
+          />
+          <h1 className="sr-only">Administração Financeira</h1>
           <p className="text-slate-400 text-xs mt-1">
             Mesmo usuário e senha em qualquer PC e no celular
           </p>
