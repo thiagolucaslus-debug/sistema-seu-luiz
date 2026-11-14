@@ -37,8 +37,18 @@ backend/*.db-wal
 # Cloud OAuth & sync metadata (never commit secrets)
 google_drive_oauth.json
 backend/google_drive_oauth.json
+cloud_vault.json
+backend/cloud_vault.json
 .cloud_sync_meta.json
 backend/.cloud_sync_meta.json
+.hub_sync_state.json
+backend/.hub_sync_state.json
+
+# Desktop portable build staging
+desktop/node_modules/
+desktop/portable_runtime/
+desktop/app_engine_clean/
+desktop/dist/
 
 # Logs
 *.log

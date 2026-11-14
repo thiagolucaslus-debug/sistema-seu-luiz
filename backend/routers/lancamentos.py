@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 import models
 import auth
+from tenancy import bump_user_sync_rev
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import date
@@ -85,7 +86,10 @@ def listar_lancamentos(
     db: Session = Depends(get_db),
     usuario = Depends(auth.get_usuario_atual)
 ):
-    query = db.query(models.Lancamento).filter(models.Lancamento.cancelado == False)
+    query = db.query(models.Lancamento).filter(
+        models.Lancamento.usuario_id == usuario.id,
+        models.Lancamento.cancelado == False,
+    )
 
     if pessoa_id:
         query = query.filter(models.Lancamento.pessoa_id == pessoa_id)
@@ -123,6 +127,7 @@ def listar_lancamentos(
             "pessoa": {"id": l.pessoa.id, "nome": l.pessoa.nome, "cor": l.pessoa.cor, "foto_path": l.pessoa.foto_path} if l.pessoa else None,
             "modulo": {"id": l.modulo.id, "nome": l.modulo.nome, "cor": l.modulo.cor} if l.modulo else None,
             "observacoes": l.observacoes,
+            "comprovante_path": l.comprovante_path,
             "parcelas": [
                 {
                     "id": p.id,
@@ -142,11 +147,52 @@ def listar_lancamentos(
 def criar_lancamento(data: LancamentoCreate, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
     cartao = None
     if data.cartao_id:
-        cartao = db.query(models.Cartao).filter(models.Cartao.id == data.cartao_id).first()
+        cartao = (
+            db.query(models.Cartao)
+            .filter(models.Cartao.id == data.cartao_id, models.Cartao.usuario_id == usuario.id)
+            .first()
+        )
         if not cartao or not cartao.ativo:
             raise HTTPException(400, "Selecione um cartão ativo.")
 
+    if data.conta_id:
+        conta = (
+            db.query(models.ContaBancaria)
+            .filter(models.ContaBancaria.id == data.conta_id, models.ContaBancaria.usuario_id == usuario.id)
+            .first()
+        )
+        if not conta:
+            raise HTTPException(400, "Conta bancária inválida.")
+
+    if data.conta_destino_id:
+        conta_dest = (
+            db.query(models.ContaBancaria)
+            .filter(models.ContaBancaria.id == data.conta_destino_id, models.ContaBancaria.usuario_id == usuario.id)
+            .first()
+        )
+        if not conta_dest:
+            raise HTTPException(400, "Conta bancária de destino inválida.")
+
+    if data.pessoa_id:
+        pessoa = (
+            db.query(models.Pessoa)
+            .filter(models.Pessoa.id == data.pessoa_id, models.Pessoa.usuario_id == usuario.id)
+            .first()
+        )
+        if not pessoa:
+            raise HTTPException(400, "Pessoa inválida.")
+
+    if data.modulo_id:
+        modulo = (
+            db.query(models.Modulo)
+            .filter(models.Modulo.id == data.modulo_id, models.Modulo.usuario_id == usuario.id)
+            .first()
+        )
+        if not modulo:
+            raise HTTPException(400, "Módulo inválido.")
+
     lancamento = models.Lancamento(
+        usuario_id=usuario.id,
         descricao=data.descricao,
         tipo=data.tipo,
         valor_total=round(data.valor_total, 2),
@@ -170,6 +216,7 @@ def criar_lancamento(data: LancamentoCreate, db: Session = Depends(get_db), usua
     for p in parcelas:
         db.add(p)
 
+    bump_user_sync_rev(db, usuario.id)
     db.commit()
     db.refresh(lancamento)
 
@@ -185,12 +232,17 @@ def criar_lancamento(data: LancamentoCreate, db: Session = Depends(get_db), usua
 
 @router.delete("/{id}")
 def cancelar_lancamento(id: int, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
-    lanc = db.query(models.Lancamento).filter(models.Lancamento.id == id).first()
+    lanc = (
+        db.query(models.Lancamento)
+        .filter(models.Lancamento.id == id, models.Lancamento.usuario_id == usuario.id)
+        .first()
+    )
     if not lanc:
         raise HTTPException(status_code=404, detail="Lançamento não encontrado.")
     lanc.cancelado = True
     for p in lanc.parcelas:
         p.status = "cancelado"
+    bump_user_sync_rev(db, usuario.id)
     db.commit()
     return {"ok": True, "mensagem": "Lançamento cancelado com sucesso."}
 
@@ -199,10 +251,16 @@ def alterar_status_parcela(id: int, numero: int, status: str, db: Session = Depe
     if status not in ["pendente", "pago", "cancelado"]:
         raise HTTPException(status_code=400, detail="Status inválido.")
 
-    parcela = db.query(models.Parcela).filter(
-        models.Parcela.lancamento_id == id,
-        models.Parcela.numero == numero
-    ).first()
+    parcela = (
+        db.query(models.Parcela)
+        .join(models.Lancamento)
+        .filter(
+            models.Parcela.lancamento_id == id,
+            models.Parcela.numero == numero,
+            models.Lancamento.usuario_id == usuario.id,
+        )
+        .first()
+    )
 
     if not parcela:
         raise HTTPException(status_code=404, detail="Parcela não encontrada.")
@@ -213,5 +271,6 @@ def alterar_status_parcela(id: int, numero: int, status: str, db: Session = Depe
     else:
         parcela.data_pagamento = None
 
+    bump_user_sync_rev(db, usuario.id)
     db.commit()
     return {"ok": True, "mensagem": f"Parcela {numero} marcada como {status}."}

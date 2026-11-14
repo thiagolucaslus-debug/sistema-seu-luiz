@@ -1,4 +1,5 @@
 import enum
+import secrets
 from sqlalchemy import (
     Column, Integer, String, Float, Date, DateTime,
     ForeignKey, Boolean, Text
@@ -35,11 +36,13 @@ class Usuario(Base):
     email = Column(String(200), unique=True, nullable=False, index=True)
     senha_hash = Column(String(255), nullable=False)
     logo_path = Column(String(500), nullable=True)
+    sync_rev = Column(Integer, nullable=False, default=1)
     created_at = Column(DateTime, server_default=func.now())
 
 class ContaBancaria(Base):
     __tablename__ = "contas_bancarias"
     id = Column(Integer, primary_key=True, index=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=True, index=True)
     nome = Column(String(100), nullable=False)
     banco = Column(String(100), nullable=False)
     agencia = Column(String(20), nullable=True)
@@ -57,6 +60,7 @@ class ContaBancaria(Base):
 class Cartao(Base):
     __tablename__ = "cartoes"
     id = Column(Integer, primary_key=True, index=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=True, index=True)
     nome = Column(String(100), nullable=False)
     bandeira = Column(String(50), default="Visa")
     dia_fechamento = Column(Integer, default=20)
@@ -71,12 +75,19 @@ class Cartao(Base):
 class Pessoa(Base):
     __tablename__ = "pessoas"
     id = Column(Integer, primary_key=True, index=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=True, index=True)
     nome = Column(String(100), nullable=False)
     telefone = Column(String(20), nullable=True)
     foto_path = Column(String(500), nullable=True)
     ativa = Column(Boolean, default=True)
     cor = Column(String(20), default="#10B981")
-    token_acesso = Column(String(64), unique=True, index=True, nullable=True)
+    token_acesso = Column(
+        String(64),
+        unique=True,
+        index=True,
+        nullable=True,
+        default=lambda: secrets.token_urlsafe(12),
+    )
     created_at = Column(DateTime, server_default=func.now())
 
     lancamentos = relationship("Lancamento", back_populates="pessoa")
@@ -86,6 +97,7 @@ class Pessoa(Base):
 class Modulo(Base):
     __tablename__ = "modulos"
     id = Column(Integer, primary_key=True, index=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=True, index=True)
     nome = Column(String(100), nullable=False)
     icone = Column(String(50), default="home")
     cor = Column(String(20), default="#3B82F6")
@@ -106,6 +118,7 @@ class Subcategoria(Base):
 class Lancamento(Base):
     __tablename__ = "lancamentos"
     id = Column(Integer, primary_key=True, index=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=True, index=True)
     descricao = Column(String(255), nullable=False)
     tipo = Column(String(50), nullable=False)  # TipoLancamento enum value
     valor_total = Column(Float, nullable=False)
@@ -148,6 +161,7 @@ class Parcela(Base):
 class PagamentoPessoa(Base):
     __tablename__ = "pagamentos_pessoa"
     id = Column(Integer, primary_key=True, index=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=True, index=True)
     pessoa_id = Column(Integer, ForeignKey("pessoas.id"), nullable=False)
     valor = Column(Float, nullable=False)
     data = Column(Date, nullable=False)
@@ -162,6 +176,7 @@ class PagamentoPessoa(Base):
 class PagamentoFatura(Base):
     __tablename__ = "pagamentos_fatura"
     id = Column(Integer, primary_key=True, index=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=True, index=True)
     cartao_id = Column(Integer, ForeignKey("cartoes.id"), nullable=False)
     mes = Column(Integer, nullable=False)
     ano = Column(Integer, nullable=False)
@@ -177,6 +192,7 @@ class PagamentoFatura(Base):
 class SolicitacaoLancamento(Base):
     __tablename__ = "solicitacoes_lancamento"
     id = Column(Integer, primary_key=True, index=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=True, index=True)
     pessoa_id = Column(Integer, ForeignKey("pessoas.id"), nullable=False)
     tipo_solicitacao = Column(String(50), default="compra_cartao")  # "compra_cartao" ou "compra_para_mim"
     cartao_id = Column(Integer, ForeignKey("cartoes.id"), nullable=True)

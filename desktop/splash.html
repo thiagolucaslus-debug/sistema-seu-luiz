@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <title>Administração Financeira</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: radial-gradient(circle at 50% 35%, #13294b 0%, #09111f 75%);
+      color: #f1f5f9;
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      user-select: none;
+    }
+    .badge-icon {
+      width: 84px;
+      height: 84px;
+      border-radius: 22px;
+      background: linear-gradient(135deg, #10b981 0%, #059669 50%, #0284c7 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 32px;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      color: #ffffff;
+      box-shadow: 0 14px 38px rgba(16, 185, 129, 0.35);
+      margin-bottom: 20px;
+      animation: floatPulse 1.6s ease-in-out infinite;
+    }
+    h1 {
+      font-size: 21px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      margin-bottom: 8px;
+    }
+    p {
+      font-size: 13px;
+      color: #94a3b8;
+    }
+    .loader-track {
+      width: 200px;
+      height: 4px;
+      background: rgba(148, 163, 184, 0.2);
+      border-radius: 999px;
+      overflow: hidden;
+      margin-top: 20px;
+    }
+    .loader-bar {
+      width: 45%;
+      height: 100%;
+      background: linear-gradient(90deg, #10b981, #38bdf8);
+      border-radius: 999px;
+      animation: slide 1.2s ease-in-out infinite;
+    }
+    @keyframes floatPulse {
+      0%, 100% { transform: translateY(0) scale(1); }
+      50% { transform: translateY(-3px) scale(1.04); }
+    }
+    @keyframes slide {
+      0% { transform: translateX(-110%); }
+      100% { transform: translateX(240%); }
+    }
+  </style>
+</head>
+<body>
+  <div class="badge-icon">AF</div>
+  <h1>Administração Financeira</h1>
+  <p>Iniciando painel local integrado e sincronização com celular…</p>
+  <div class="loader-track"><div class="loader-bar"></div></div>
+</body>
+</html>

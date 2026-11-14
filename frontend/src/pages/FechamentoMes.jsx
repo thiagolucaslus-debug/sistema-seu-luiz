@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import { relatorios, pessoas as pessoasApi, whatsapp as whatsappApi, mediaUrl } from '../api/client';
+import { relatorios, pessoas as pessoasApi, whatsapp as whatsappApi, mediaUrl, publicShareOrigin } from '../api/client';
+import { useAuth } from '../contexts/AuthContext';
 import Avatar from '../components/Avatar';
 import CardArtwork from '../components/CardArtwork';
 import {
@@ -12,6 +13,8 @@ function fmt(val) {
 }
 
 export default function FechamentoMes() {
+  const { usuario } = useAuth();
+  const nomeGestor = usuario?.nome || 'Administração Financeira';
   const hoje = new Date();
   const [mes, setMes] = useState(hoje.getMonth() + 1);
   const [ano, setAno] = useState(hoje.getFullYear());
@@ -165,11 +168,11 @@ export default function FechamentoMes() {
 
     // Link público para download do PDF
     if (p.token_acesso) {
-      const linkPdf = `${window.location.origin}/public/fechamento/${p.token_acesso}/${mes}/${ano}/pdf`;
+      const linkPdf = `${publicShareOrigin()}/public/fechamento/${p.token_acesso}/${mes}/${ano}/pdf`;
       txt += `📄 *BAIXAR EXTRATO COMPLETO EM PDF:*\n${linkPdf}\n\n`;
     }
 
-    txt += `Qualquer dúvida só me avisar! Abraço, Seu Luiz.`;
+    txt += `Qualquer dúvida só me avisar! Abraço, ${nomeGestor}.`;
     return txt;
   };
 
@@ -501,7 +504,7 @@ export default function FechamentoMes() {
                   <CardArtwork
                     brand={c.bandeira}
                     bank={c.nome}
-                    holder="FRANCISCO LUIZ"
+                    holder={(usuario?.nome || 'ADMINISTRAÇÃO FINANCEIRA').toUpperCase()}
                     className="w-full h-full"
                   />
                 </div>

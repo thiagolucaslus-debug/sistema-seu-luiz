@@ -1,17 +1,14 @@
 import { useState, useEffect } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
-import { pessoas as pessoasApi } from '../api/client';
-import { Smartphone, Copy, Check, ExternalLink, X, Send, ShieldCheck, QrCode } from 'lucide-react';
+import { pessoas as pessoasApi, PUBLIC_CLOUD_URL } from '../api/client';
+import { Smartphone, Copy, Check, ExternalLink, X, Send, ShieldCheck } from 'lucide-react';
 
 export default function ModalAcessoCelular({ isOpen, onClose }) {
   const [copied, setCopied] = useState(false);
   const [copiedPessoaId, setCopiedPessoaId] = useState(null);
-  const [linkTipo, setLinkTipo] = useState('nuvem'); // 'nuvem' | 'tunel'
   const [pessoas, setPessoas] = useState([]);
 
-  const urlNuvem = 'https://sistema-seu-luiz.onrender.com';
-  const urlTunel = 'https://producer-cancellation-connections-airline.trycloudflare.com';
-  const urlAtual = linkTipo === 'nuvem' ? urlNuvem : urlTunel;
+  const urlAtual = PUBLIC_CLOUD_URL;
 
   useEffect(() => {
     if (isOpen) {
@@ -56,8 +53,8 @@ export default function ModalAcessoCelular({ isOpen, onClose }) {
               <Smartphone size={22} />
             </div>
             <div>
-              <h2 className="text-lg sm:text-xl font-black text-ink tracking-tight">Acesso no Celular</h2>
-              <p className="text-xs text-slate-400">Escaneie o QR Code ou copie os links para usar no smartphone</p>
+              <h2 className="text-lg sm:text-xl font-black text-ink tracking-tight">Acesso no Celular 24/7</h2>
+              <p className="text-xs text-slate-400">Entre no celular com o mesmo usuário e senha deste PC</p>
             </div>
           </div>
           <button onClick={onClose} className="p-1.5 text-slate-400 hover:text-ink rounded-lg transition-colors">
@@ -66,30 +63,6 @@ export default function ModalAcessoCelular({ isOpen, onClose }) {
         </div>
 
         <div className="space-y-5 pt-4">
-          {/* Seletor de Servidor */}
-          <div className="flex gap-2 p-1 rounded-xl bg-slate-900 border border-slate-800">
-            <button
-              onClick={() => setLinkTipo('nuvem')}
-              className={`flex-1 py-2 px-3 rounded-lg text-xs font-bold transition-all ${
-                linkTipo === 'nuvem'
-                  ? 'bg-blue-600 text-white shadow'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              ☁️ Nuvem 24/7 (Recomendado)
-            </button>
-            <button
-              onClick={() => setLinkTipo('tunel')}
-              className={`flex-1 py-2 px-3 rounded-lg text-xs font-bold transition-all ${
-                linkTipo === 'tunel'
-                  ? 'bg-blue-600 text-white shadow'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              💻 Conexão Direta PC
-            </button>
-          </div>
-
           {/* Área do QR Code e Link Principal */}
           <div className="p-5 rounded-2xl border border-slate-700/50 flex flex-col sm:flex-row items-center gap-5" style={{ backgroundColor: 'var(--raised)' }}>
             <div className="bg-white p-3 rounded-2xl shadow-lg shrink-0 flex items-center justify-center">
@@ -104,7 +77,7 @@ export default function ModalAcessoCelular({ isOpen, onClose }) {
             <div className="flex-1 space-y-3 text-center sm:text-left">
               <div>
                 <span className="text-[11px] font-bold text-blue-400 uppercase tracking-wider block">
-                  Link do Sistema Completo ({linkTipo === 'nuvem' ? 'Nuvem 24h' : 'PC Local'})
+                  Link Oficial Nuvem 24/7 (Sincronizado PC ↔ Celular)
                 </span>
                 <p className="text-xs font-mono text-ink break-all mt-1 bg-black/40 p-2 rounded-lg border border-slate-700/40">
                   {urlAtual}
@@ -138,7 +111,7 @@ export default function ModalAcessoCelular({ isOpen, onClose }) {
             <div>
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-extrabold text-ink uppercase tracking-wider">
-                  Links das Meninas (Lançar Compras com Foto)
+                  Links Individuais (Lançar Compras com Foto)
                 </span>
                 <span className="text-[11px] text-slate-400">Não veem suas finanças</span>
               </div>

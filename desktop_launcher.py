@@ -52,6 +52,7 @@ def abrir_navegador(porta):
         print(f"Abra o navegador em: {url}")
 
 def main():
+    os.environ.setdefault("SEU_LUIZ_DESKTOP_MODE", "1")
     porta_env = int(os.environ.get("SEU_LUIZ_PORT") or 8000)
     porta = encontrar_porta_livre(porta_env)
     print("=" * 60)

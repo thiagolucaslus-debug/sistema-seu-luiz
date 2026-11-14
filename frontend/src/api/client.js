@@ -2,6 +2,17 @@ import axios from 'axios';
 
 // Com o proxy configurado no Vite, chamadas relativas funcionam localmente e via túnel HTTPS
 const API_URL = '';
+export const PUBLIC_CLOUD_URL = 'https://sistema-seu-luiz.onrender.com';
+
+export const publicShareOrigin = () => {
+  if (typeof window === 'undefined') return PUBLIC_CLOUD_URL;
+  const host = String(window.location.hostname || '').trim().toLowerCase();
+  if (!host || host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]') {
+    return PUBLIC_CLOUD_URL;
+  }
+  return window.location.origin;
+};
+
 export const mediaUrl = (path) => {
   if (!path) return '';
   if (path.startsWith('http')) {
@@ -113,9 +124,9 @@ export const solicitacoes = {
   listar: (status) => api.get('/solicitacoes/', { params: { status } }),
   contarPendentes: () => api.get('/solicitacoes/pendentes/count'),
   aprovar: (id, data) => api.post(`/solicitacoes/${id}/aprovar`, data),
-  rejeitar: (id, motivo) => api.post(`/solicitacoes/${id}/rejeitar`, null, { params: { motivo } }),
-  gerarTokenPessoa: (pessoaId) => api.post(`/solicitacoes/gerar-token/${pessoaId}`),
-  obterLinkPessoa: (pessoaId) => api.get(`/solicitacoes/link/${pessoaId}`),
+  rejeitar: (id, motivo) => api.post(`/solicitacoes/${id}/rejeitar`, { motivo }, { params: { motivo } }),
+  gerarTokenPessoa: (pessoaId) => api.post(`/pessoas/${pessoaId}/gerar-link`),
+  obterLinkPessoa: (pessoaId) => api.post(`/pessoas/${pessoaId}/gerar-link`),
 };
 
 // Integração com o serviço de WhatsApp automático

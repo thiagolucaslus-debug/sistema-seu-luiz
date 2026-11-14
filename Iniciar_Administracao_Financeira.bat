@@ -1,14 +1,15 @@
 @echo off
-title Administracao Financeira
 chcp 65001 >nul
-cls
-echo ======================================================================
-echo           ADMINISTRAÇÃO FINANCEIRA — SISTEMA PESSOAL DESKTOP
-echo ======================================================================
-echo.
-echo Iniciando o sistema... Seu navegador padrão abrirá automaticamente.
-echo Para fechar o sistema, feche esta janela.
-echo.
-cd /d "%~dp0"
-start "" "%~dp0dist\AdministracaoFinanceira.exe"
-exit
+if exist "D:\AdministracaoFinanceira\Administracao Financeira.exe" (
+    start "" "D:\AdministracaoFinanceira\Administracao Financeira.exe"
+    exit /b 0
+)
+if exist "%LOCALAPPDATA%\Programs\Administracao Financeira\Administracao Financeira.exe" (
+    start "" "%LOCALAPPDATA%\Programs\Administracao Financeira\Administracao Financeira.exe"
+    exit /b 0
+)
+if exist "%~dp0dist\Administracao_Financeira_Setup.exe" (
+    start "" "%~dp0dist\Administracao_Financeira_Setup.exe"
+    exit /b 0
+)
+exit /b 1

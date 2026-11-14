@@ -1,4 +1,4 @@
-name: Anti-Sono 24-7 & Monitoramento Nuvem (Render + Google Drive)
+name: Anti-Sono 24-7 & Monitoramento Nuvem (Render + Cofre Criptografado)
 
 on:
   workflow_dispatch:
@@ -17,11 +17,16 @@ concurrency:
 jobs:
   keep-alive:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
-      - name: Ping 24/7 e Auto-Verificacao da Nuvem
+      - name: Ping 24/7 e Auto-Hidratacao do Cofre Criptografado
         env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
           RENDER_APP_URL: ${{ vars.RENDER_APP_URL || 'https://sistema-seu-luiz.onrender.com' }}
+          CLOUD_VAULT_HYDRATE_SECRET: ${{ secrets.CLOUD_VAULT_HYDRATE_SECRET }}
+          CLOUD_VAULT_GITHUB_TOKEN: ${{ secrets.CLOUD_VAULT_GITHUB_TOKEN }}
+          CLOUD_VAULT_REPO: ${{ secrets.CLOUD_VAULT_REPO }}
+          CLOUD_VAULT_AES_KEY: ${{ secrets.CLOUD_VAULT_AES_KEY }}
           GOOGLE_DRIVE_OAUTH_JSON: ${{ secrets.GOOGLE_DRIVE_OAUTH_JSON }}
           RENDER_ADMIN_USER: ${{ secrets.RENDER_ADMIN_USER }}
           RENDER_ADMIN_PASSWORD: ${{ secrets.RENDER_ADMIN_PASSWORD }}
@@ -36,46 +41,99 @@ jobs:
 
           base_url = (os.environ.get("RENDER_APP_URL") or "https://sistema-seu-luiz.onrender.com").strip().rstrip("/")
           health_url = f"{base_url}/health"
+          event_name = (os.environ.get("GITHUB_EVENT_NAME") or "").strip()
 
-          last_err = None
-          health_data = None
-          for attempt in range(1, 5):
-              t0 = time.monotonic()
-              try:
-                  req = urllib.request.Request(
-                      health_url,
-                      headers={"User-Agent": "SistemaSeuLuiz-KeepAlive/2.0"},
+          vault_secret = (os.environ.get("CLOUD_VAULT_HYDRATE_SECRET") or "").strip()
+          vault_gh_token = (os.environ.get("CLOUD_VAULT_GITHUB_TOKEN") or "").strip()
+          vault_repo = (os.environ.get("CLOUD_VAULT_REPO") or "").strip()
+          vault_aes = (os.environ.get("CLOUD_VAULT_AES_KEY") or "").strip()
+          has_vault_secrets = bool(vault_secret and vault_gh_token and vault_repo and vault_aes)
+
+          def fetch_health():
+              req = urllib.request.Request(
+                  health_url,
+                  headers={"User-Agent": "SistemaSeuLuiz-KeepAlive/3.0"},
+              )
+              with urllib.request.urlopen(req, timeout=35) as resp:
+                  raw = resp.read().decode("utf-8", errors="replace")
+                  return resp.status, json.loads(raw)
+
+          def hydrate_vault():
+              hyd_req = urllib.request.Request(
+                  f"{base_url}/cloud/vault/hydrate",
+                  data=json.dumps({
+                      "hydrate_secret": vault_secret,
+                      "github_token": vault_gh_token,
+                      "repo": vault_repo,
+                      "aes_key": vault_aes,
+                      "branch": "main",
+                  }).encode("utf-8"),
+                  headers={"Content-Type": "application/json"},
+                  method="POST",
+              )
+              with urllib.request.urlopen(hyd_req, timeout=60) as hr:
+                  res_json = json.loads(hr.read().decode("utf-8"))
+                  print(
+                      f"[OK] Cofre criptografado 24/7 hidratado! "
+                      f"vault_connected={res_json.get('vault_connected')}, rev={res_json.get('revision')}"
                   )
-                  with urllib.request.urlopen(req, timeout=35) as resp:
-                      raw = resp.read().decode("utf-8", errors="replace")
-                      elapsed_ms = int((time.monotonic() - t0) * 1000)
-                      print(f"[OK] Tentativa {attempt}: HTTP {resp.status} em {elapsed_ms} ms -> {raw}")
-                      if resp.status == 200:
-                          try:
-                              health_data = json.loads(raw)
-                          except Exception:
-                              health_data = {"status": "ok"}
+                  return res_json
+
+          # Em evento de push, aguarda o Render concluir o novo deploy caso ainda esteja trocando o container
+          if event_name == "push":
+              print("[INFO] Push detectado: acompanhando janela de deploy do Render...")
+              time.sleep(20)
+
+          max_cycles = 16 if (event_name == "push" and has_vault_secrets) else 4
+          health_data = None
+          last_err = None
+
+          for cycle in range(1, max_cycles + 1):
+              try:
+                  t0 = time.monotonic()
+                  code, data = fetch_health()
+                  elapsed_ms = int((time.monotonic() - t0) * 1000)
+                  nuvem = data.get("nuvem") or {}
+                  print(
+                      f"[OK] Ciclo {cycle}/{max_cycles}: HTTP {code} em {elapsed_ms} ms -> "
+                      f"provedor={nuvem.get('provedor')}, vault={nuvem.get('vault_conectado')}, "
+                      f"drive={nuvem.get('drive_conectado')}, rev={nuvem.get('revisao')}"
+                  )
+                  health_data = data
+
+                  if has_vault_secrets and "vault_conectado" in nuvem and not nuvem.get("vault_conectado"):
+                      hydrate_vault()
+                      _, health_data = fetch_health()
+                      nuvem = health_data.get("nuvem") or {}
+
+                  # Se nao for push, um unico ping + hidratacao (se necessaria) ja basta
+                  if event_name != "push":
+                      break
+
+                  # Em push, garante que o novo container ja subiu com suporte ao cofre e esta conectado
+                  if "vault_conectado" in nuvem and (nuvem.get("vault_conectado") or not has_vault_secrets):
+                      if cycle >= 6:
                           break
+                  time.sleep(15)
               except Exception as exc:
                   last_err = exc
-                  print(f"[AVISO] Tentativa {attempt}/4 falhou ({exc}). Aguardando 15s...")
-                  if attempt < 4:
+                  print(f"[AVISO] Ciclo {cycle}/{max_cycles} falhou ({exc}). Aguardando 15s...")
+                  if cycle < max_cycles:
                       time.sleep(15)
 
           if health_data is None:
-              print(f"[ERRO] Servidor nao respondeu apos 4 tentativas: {last_err}")
+              print(f"[ERRO] Servidor nao respondeu: {last_err}")
               sys.exit(1)
 
           nuvem = health_data.get("nuvem") or {}
           drive_ok = nuvem.get("drive_conectado")
-          print(f"[INFO] Status Backup Google Drive no servidor: conectado={drive_ok}, ultimo_backup={nuvem.get('ultimo_backup')}")
+          vault_ok = nuvem.get("vault_conectado")
 
-          # Auto-hidratacao opcional caso o container tenha reiniciado sem variavel no Render,
-          # mas os Secrets estejam salvos no GitHub Actions:
+          # Fallback legado opcional para Google Drive somente se cofre criptografado nao estiver ativo
           gd_token = (os.environ.get("GOOGLE_DRIVE_OAUTH_JSON") or "").strip()
           adm_user = (os.environ.get("RENDER_ADMIN_USER") or "").strip()
           adm_pass = (os.environ.get("RENDER_ADMIN_PASSWORD") or "").strip()
-          if drive_ok is False and gd_token and adm_user and adm_pass:
+          if not vault_ok and drive_ok is False and gd_token and adm_user and adm_pass:
               try:
                   login_req = urllib.request.Request(
                       f"{base_url}/auth/login",
@@ -97,7 +155,7 @@ jobs:
                       method="POST",
                   )
                   with urllib.request.urlopen(tok_req, timeout=60) as tr:
-                      print("[OK] Auto-hidratacao do Google Drive concluida:", tr.read().decode("utf-8"))
+                      print("[OK] Auto-hidratacao Google Drive concluida:", tr.read().decode("utf-8"))
               except Exception as exc:
                   print(f"[AVISO] Auto-hidratacao opcional nao executada: {exc}")
           PY

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
+import os
 import sqlite3
 from datetime import datetime
 from html import escape
@@ -15,6 +18,9 @@ import models
 from services.cloud_sync import CloudSyncManager
 
 router = APIRouter(prefix="/cloud", tags=["cloud"])
+
+# Compromisso criptográfico unidirecional (SHA-256) para hidratação automática segura pelo GitHub Actions
+DEFAULT_VAULT_HYDRATE_SHA256 = "acbadc614164fd8b0089d5435a96b69a88a9e19adb5c788d8eaad0ea5354c62b"
 
 _manager_instance: CloudSyncManager | None = None
 
@@ -38,6 +44,14 @@ class TokenImportRequest(BaseModel):
 
 class RestoreRequest(BaseModel):
     force: bool = True
+
+
+class VaultHydrateRequest(BaseModel):
+    hydrate_secret: str
+    github_token: str
+    repo: str
+    aes_key: str
+    branch: str = "main"
 
 
 def _resolve_redirect_uri(request: Request) -> str:
@@ -319,3 +333,32 @@ def baixar_backup_zip(
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.post("/vault/hydrate")
+def hidratar_cofre_criptografado(
+    req: VaultHydrateRequest,
+    mgr: CloudSyncManager = Depends(get_cloud_manager),
+):
+    """
+    Hidrata o cofre criptografado 24/7 em containers efêmeros validando o compromisso SHA-256,
+    sem armazenar tokens ou chaves de criptografia no código-fonte público.
+    """
+    expected_hash = (
+        os.environ.get("CLOUD_VAULT_HYDRATE_SHA256") or DEFAULT_VAULT_HYDRATE_SHA256
+    ).strip().lower()
+    provided_hash = hashlib.sha256((req.hydrate_secret or "").encode("utf-8")).hexdigest().lower()
+    if not hmac.compare_digest(provided_hash.encode("ascii"), expected_hash.encode("ascii")):
+        raise HTTPException(status_code=403, detail="Assinatura de hidratação inválida.")
+
+    try:
+        return mgr.hydrate_vault(
+            github_token=req.github_token,
+            repo=req.repo,
+            aes_key=req.aes_key,
+            branch=req.branch,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Falha ao hidratar cofre em nuvem: {exc}") from exc

@@ -1,9 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
 import Avatar from '../components/Avatar';
+import { useAuth } from '../contexts/AuthContext';
 import {
   pessoas as pessoasApi,
   contas as contasApi,
-  whatsapp as whatsappApi
+  whatsapp as whatsappApi,
+  publicShareOrigin
 } from '../api/client';
 import {
   Users, Plus, ChevronDown, ChevronUp, Download,
@@ -389,10 +391,11 @@ function ModalRegistrarPagamento({ pessoa, contas, onClose, onSaved }) {
 
 function ModalLinkLancamento({ pessoa, onClose }) {
   const [copiado, setCopiado] = useState(false);
-  const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-  const link = `${window.location.origin}/lancar/${pessoa.token_acesso}`;
+  const { usuario } = useAuth();
+  const nomeGestor = usuario?.nome || 'Administração Financeira';
+  const link = `${publicShareOrigin()}/lancar/${pessoa.token_acesso}`;
 
-  const mensagemWhats = `Olá, *${pessoa.nome}*! 👋\n\nAqui está o seu link pessoal e exclusivo para lançar compras no cartão do Seu Luiz direto do seu celular:\n\n👉 ${link}\n\n💡 *Dica:* Salve este link nos seus favoritos ou adicione na tela inicial do seu celular para enviar compras e comprovantes sempre que usar o cartão!`;
+  const mensagemWhats = `Olá, *${pessoa.nome}*! 👋\n\nAqui está o seu link pessoal e exclusivo para lançar compras e comprovantes direto do seu celular (${nomeGestor}):\n\n👉 ${link}\n\n💡 *Dica:* Salve este link nos seus favoritos ou adicione na tela inicial do seu celular para enviar compras sempre que usar o cartão!`;
 
   const copiar = () => {
     navigator.clipboard.writeText(link);
@@ -402,8 +405,9 @@ function ModalLinkLancamento({ pessoa, onClose }) {
 
   const enviarWhatsApp = () => {
     const numLimpo = String(pessoa.telefone || '').replace(/\D/g, '');
+    const telFinal = numLimpo.startsWith('55') ? numLimpo : `55${numLimpo}`;
     const urlWa = numLimpo
-      ? `https://wa.me/55${numLimpo}?text=${encodeURIComponent(mensagemWhats)}`
+      ? `https://wa.me/${telFinal}?text=${encodeURIComponent(mensagemWhats)}`
       : `https://web.whatsapp.com/send?text=${encodeURIComponent(mensagemWhats)}`;
     window.open(urlWa, '_blank');
   };
@@ -430,7 +434,7 @@ function ModalLinkLancamento({ pessoa, onClose }) {
         </div>
 
         <div>
-          <label className="label text-ink font-semibold">Link Pessoal de Lançamento</label>
+          <label className="label text-ink font-semibold">Link Pessoal de Lançamento (Nuvem 24/7)</label>
           <div className="flex items-center gap-2">
             <input
               type="text"
@@ -453,17 +457,12 @@ function ModalLinkLancamento({ pessoa, onClose }) {
           </div>
         </div>
 
-        {isLocalhost && (
-          <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-300 space-y-1">
-            <strong>⚠️ Atenção sobre o WhatsApp e Celular:</strong>
-            <p>
-              O link acima tem <code>localhost</code>, que só existe dentro deste computador. No celular da outra pessoa ou no 4G, ele não abre e o WhatsApp não deixa azul clicável.
-            </p>
-            <p className="font-semibold text-amber-200">
-              👉 Para gerar o link de internet oficial (HTTPS) que funciona em qualquer celular 24h, execute o arquivo <code>conectar_celular.bat</code> na pasta do sistema!
-            </p>
-          </div>
-        )}
+        <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-[11px] text-emerald-300 space-y-1">
+          <strong>✅ Link HTTPS 24/7 sincronizado entre Celular e PC:</strong>
+          <p>
+            Funciona em qualquer celular (Wi-Fi, 4G ou 5G). Toda compra ou foto enviada por {pessoa.nome} aparece automaticamente em <strong>Aprovações</strong> no seu celular e neste computador.
+          </p>
+        </div>
 
         <div className="space-y-2 pt-2 border-t border-slate-700/50">
           <button
@@ -490,6 +489,8 @@ function ModalLinkLancamento({ pessoa, onClose }) {
 }
 
 function CardPessoa({ pessoa, contas, onRefresh }) {
+  const { usuario } = useAuth();
+  const nomeGestor = usuario?.nome || 'Administração Financeira';
   const [expanded, setExpanded] = useState(false);
   const [extrato, setExtrato] = useState(null);
   const [loadingExtrato, setLoadingExtrato] = useState(false);
@@ -619,11 +620,11 @@ function CardPessoa({ pessoa, contas, onRefresh }) {
     }
 
     if (pessoa.token_acesso) {
-      const linkPdf = `${window.location.origin}/public/fechamento/${pessoa.token_acesso}/${mes}/${ano}/pdf`;
+      const linkPdf = `${publicShareOrigin()}/public/fechamento/${pessoa.token_acesso}/${mes}/${ano}/pdf`;
       msgTexto += `📄 *BAIXAR EXTRATO COMPLETO EM PDF:*\n${linkPdf}\n\n`;
     }
 
-    msgTexto += `Qualquer dúvida só me avisar! Abraço, Seu Luiz.`;
+    msgTexto += `Qualquer dúvida só me avisar! Abraço, ${nomeGestor}.`;
 
     try {
       // 1. Obtém o caminho absoluto do PDF gerado no backend

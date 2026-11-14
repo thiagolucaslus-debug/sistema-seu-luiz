@@ -19,8 +19,14 @@ app.use((req, res, next) => {
 });
 app.use(express.json({ limit: '18mb' }));
 
-const authDir = path.join(__dirname, '.wwebjs_auth');
-const pdfDir = path.resolve(__dirname, '..', 'backend', 'pdfs');
+const dataRoot = process.env.SEU_LUIZ_DATA_DIR ? path.resolve(process.env.SEU_LUIZ_DATA_DIR) : null;
+const legacyAuthDir = path.join(__dirname, '.wwebjs_auth');
+const authDir = fs.existsSync(path.join(legacyAuthDir, 'session'))
+  ? legacyAuthDir
+  : (dataRoot ? path.join(dataRoot, '.wwebjs_auth') : legacyAuthDir);
+const primaryPdfDir = dataRoot ? path.join(dataRoot, 'pdfs') : path.resolve(__dirname, '..', 'backend', 'pdfs');
+const fallbackPdfDir = path.resolve(__dirname, '..', 'backend', 'pdfs');
+const allowedPdfDirs = new Set([primaryPdfDir.toLowerCase(), fallbackPdfDir.toLowerCase()]);
 let client = null;
 let state = 'idle';
 let qrMatrix = null;
@@ -238,7 +244,7 @@ app.post('/send-pdf', async (req, res) => {
     const chatId = `${numero}@c.us`;
 
     const resolved = path.resolve(pdf_path);
-    if (path.dirname(resolved).toLowerCase() !== pdfDir.toLowerCase() ||
+    if (!allowedPdfDirs.has(path.dirname(resolved).toLowerCase()) ||
         path.extname(resolved).toLowerCase() !== '.pdf' || !fs.existsSync(resolved)) {
       return res.status(404).json({ error: 'Relatório PDF não encontrado.' });
     }

@@ -33,6 +33,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from services.vault_crypto import (
+    GitHubEncryptedVaultClient,
+    decode_vault_aes_key,
+    merge_missing_users_sqlite,
+)
+
 BUILTIN_DESKTOP_CLIENT_ID = "202264815644.apps.googleusercontent.com"
 _BUILTIN_OBSCURED_SECRET = "eX8GpZTVx3vxMWVkuuBdDWmAUE6rGhTwVrvG9GhllYccSdj2-mvHVg"
 _OBSCURE_AES_KEY = bytes(
@@ -337,6 +343,7 @@ class CloudSyncManager:
         self.config_dir.mkdir(parents=True, exist_ok=True)
 
         self.creds_path = self.config_dir / "google_drive_oauth.json"
+        self.vault_creds_path = self.config_dir / "cloud_vault.json"
         self.meta_path = self.data_dir / ".cloud_sync_meta.json"
 
         self._engine_disposer = engine_disposer
@@ -360,6 +367,7 @@ class CloudSyncManager:
 
         self._pending_oauth: dict[str, dict[str, Any]] = {}
         self.credentials: dict[str, Any] = {}
+        self.vault_credentials: dict[str, Any] = {}
         self.meta: dict[str, Any] = _read_json_safe(self.meta_path)
 
         self._dirty = False
@@ -375,6 +383,71 @@ class CloudSyncManager:
         self._worker_thread: threading.Thread | None = None
 
         self._load_initial_credentials()
+        self._load_initial_vault_credentials()
+
+    def _load_initial_vault_credentials(self) -> None:
+        env_tok = (os.environ.get("CLOUD_VAULT_GITHUB_TOKEN") or "").strip()
+        env_repo = (os.environ.get("CLOUD_VAULT_REPO") or "").strip()
+        env_key = (os.environ.get("CLOUD_VAULT_AES_KEY") or "").strip()
+        env_branch = (os.environ.get("CLOUD_VAULT_BRANCH") or "main").strip() or "main"
+
+        if env_tok and env_repo and env_key:
+            try:
+                decode_vault_aes_key(env_key)
+                self.vault_credentials = {
+                    "github_token": env_tok,
+                    "repo": env_repo,
+                    "aes_key": env_key,
+                    "branch": env_branch,
+                    "auto_sync_enabled": True,
+                }
+                return
+            except Exception as exc:
+                self._last_error = f"Configuração CLOUD_VAULT inválida: {exc}"
+
+        file_vault = _read_json_safe(self.vault_creds_path)
+        if (
+            file_vault.get("github_token")
+            and file_vault.get("repo")
+            and file_vault.get("aes_key")
+        ):
+            try:
+                decode_vault_aes_key(str(file_vault["aes_key"]))
+                self.vault_credentials = file_vault
+            except Exception:
+                self.vault_credentials = {}
+
+    def _build_vault_client(self) -> GitHubEncryptedVaultClient:
+        with self._state_lock:
+            tok = str(self.vault_credentials.get("github_token") or "").strip()
+            repo = str(self.vault_credentials.get("repo") or "").strip()
+            key_str = str(self.vault_credentials.get("aes_key") or "").strip()
+            branch = str(self.vault_credentials.get("branch") or "main").strip() or "main"
+        return GitHubEncryptedVaultClient(
+            token=tok,
+            repo=repo,
+            aes_key=decode_vault_aes_key(key_str),
+            branch=branch,
+            http_transport=self._http,
+        )
+
+    def is_vault_connected(self) -> bool:
+        with self._state_lock:
+            return bool(
+                self.vault_credentials.get("github_token")
+                and self.vault_credentials.get("repo")
+                and self.vault_credentials.get("aes_key")
+            )
+
+    def _is_gdrive_connected(self) -> bool:
+        with self._state_lock:
+            return bool(
+                self.credentials.get("refresh_token")
+                or (
+                    self.credentials.get("access_token")
+                    and float(self.credentials.get("expires_at") or 0) > time.time() + 30
+                )
+            )
 
     def _load_initial_credentials(self) -> None:
         env_raw = (os.environ.get("GOOGLE_DRIVE_OAUTH_JSON") or "").strip()
@@ -407,29 +480,38 @@ class CloudSyncManager:
 
     def is_connected(self) -> bool:
         with self._state_lock:
-            return bool(
-                self.credentials.get("refresh_token")
-                or (
-                    self.credentials.get("access_token")
-                    and float(self.credentials.get("expires_at") or 0) > time.time() + 30
-                )
-            )
+            return self.is_vault_connected() or self._is_gdrive_connected()
 
     def status(self) -> dict[str, Any]:
         with self._state_lock:
-            connected = self.is_connected()
+            vault_ok = self.is_vault_connected()
+            gdrive_ok = self._is_gdrive_connected()
+            connected = vault_ok or gdrive_ok
             has_custom = bool(self.credentials.get("custom_client") and self.credentials.get("client_id"))
             last_sync_ts = self.meta.get("last_sync_at")
             last_restore_ts = self.meta.get("last_restore_at")
             uploads_map = self.meta.get("uploads") or {}
+            account_label = str(self.credentials.get("account") or "")
+            folder_url = str(self.meta.get("folder_url") or "")
+            auto_sync = (
+                bool(self.vault_credentials.get("auto_sync_enabled", True))
+                if vault_ok
+                else bool(self.credentials.get("auto_sync_enabled", True))
+            )
+            if vault_ok and not account_label:
+                account_label = f"Cofre Criptografado 24/7 ({self.vault_credentials.get('repo')})"
+            if vault_ok and not folder_url:
+                folder_url = f"https://github.com/{self.vault_credentials.get('repo')}"
             return {
                 "configured": True,
                 "custom_client_configured": has_custom,
                 "connected": connected,
-                "account": str(self.credentials.get("account") or ""),
+                "vault_connected": vault_ok,
+                "provider": "github_vault" if vault_ok else "google_drive",
+                "account": account_label,
                 "folder_name": str(self.credentials.get("root_folder_name") or DEFAULT_FOLDER_NAME),
-                "folder_url": str(self.meta.get("folder_url") or ""),
-                "auto_sync_enabled": bool(self.credentials.get("auto_sync_enabled", True)),
+                "folder_url": folder_url,
+                "auto_sync_enabled": auto_sync,
                 "syncing": self._syncing,
                 "restoring": self._restoring,
                 "pending_changes": self._dirty,
@@ -442,7 +524,10 @@ class CloudSyncManager:
                 "uploads_synced_count": len(uploads_map),
                 "counts": self.meta.get("counts") or {},
                 "is_cloud_container": self.is_cloud_container,
-                "env_var_configured": bool((os.environ.get("GOOGLE_DRIVE_OAUTH_JSON") or "").strip()),
+                "env_var_configured": bool(
+                    (os.environ.get("GOOGLE_DRIVE_OAUTH_JSON") or "").strip()
+                    or (os.environ.get("CLOUD_VAULT_GITHUB_TOKEN") or "").strip()
+                ),
                 "render_url": os.environ.get("RENDER_EXTERNAL_URL") or DEFAULT_RENDER_URL,
                 "keep_alive_interval_minutes": 10,
                 "connection_version": str(self.credentials.get("connection_version") or ""),
@@ -453,6 +538,8 @@ class CloudSyncManager:
         st = self.status()
         return {
             "drive_conectado": st["connected"],
+            "vault_conectado": st["vault_connected"],
+            "provedor": st["provider"],
             "auto_sync": st["auto_sync_enabled"],
             "ultimo_backup": st["last_sync_iso"],
             "revisao": st["revision"],
@@ -795,6 +882,11 @@ class CloudSyncManager:
             if status_code == 401 and attempt == 0:
                 self._get_access_token(force_refresh=True)
                 continue
+            if status_code == 403 and attempt < 2:
+                lower_body = resp_body.decode("utf-8", errors="ignore").lower()
+                if "quota" in lower_body or "ratelimit" in lower_body or "rate limit" in lower_body:
+                    time.sleep(1.2 * (attempt + 1))
+                    continue
             if status_code in (429, 500, 502, 503, 504) and attempt < 2:
                 time.sleep(0.8 * (attempt + 1))
                 continue
@@ -1078,7 +1170,401 @@ class CloudSyncManager:
             }
         return items
 
+    def hydrate_vault(
+        self,
+        *,
+        github_token: str,
+        repo: str,
+        aes_key: str,
+        branch: str = "main",
+    ) -> dict[str, Any]:
+        """Configura e hidrata o Cofre Privado Criptografado AES-256-GCM sem expor segredos no código."""
+        tok = (github_token or "").strip()
+        repo_clean = (repo or "").strip().strip("/")
+        key_clean = (aes_key or "").strip()
+        branch_clean = (branch or "main").strip() or "main"
+        if not tok or not repo_clean or not key_clean:
+            raise ValueError("Credenciais do cofre em nuvem incompletas.")
+
+        key_bytes = decode_vault_aes_key(key_clean)
+        test_client = GitHubEncryptedVaultClient(
+            token=tok,
+            repo=repo_clean,
+            aes_key=key_bytes,
+            branch=branch_clean,
+            http_transport=self._http,
+        )
+        test_client.verify_repo_access()
+
+        with self._state_lock:
+            self.vault_credentials = {
+                "github_token": tok,
+                "repo": repo_clean,
+                "aes_key": key_clean,
+                "branch": branch_clean,
+                "auto_sync_enabled": True,
+            }
+            self._boot_restore_failed = False
+            self._last_error = None
+            _atomic_write_json(self.vault_creds_path, self.vault_credentials, private=True)
+
+        restore_res = self._vault_restore(
+            force=True,
+            on_boot=False,
+            merge_pre_hydration_local=True,
+        )
+        sync_res: dict[str, Any] | None = None
+        if (
+            not restore_res.get("remote_backup_found") or restore_res.get("merged_local_users", 0) > 0
+        ) and self.db_path.is_file():
+            sync_res = self._vault_sync_now(force=True, reason="vault_hydrate_sync")
+
+        st = self.status()
+        st["hydrate_result"] = restore_res
+        if sync_res is not None:
+            st["sync_result"] = sync_res
+        return st
+
+    def _vault_sync_now(self, *, force: bool = False, reason: str = "manual") -> dict[str, Any]:
+        if not self.is_vault_connected():
+            return {"ok": False, "skipped": True, "reason": "not_connected"}
+        if not self.db_path.is_file():
+            return {"ok": False, "skipped": True, "reason": "local_db_missing"}
+
+        if not force and self._boot_restore_failed:
+            retry_res = self._vault_restore(force=False, on_boot=True)
+            if not retry_res.get("ok"):
+                return {
+                    "ok": False,
+                    "blocked_boot_restore_pending": True,
+                    "detail": "Aguardando restauração inicial do cofre em nuvem antes de sincronizar.",
+                }
+            if retry_res.get("restored"):
+                return {"ok": True, "action": "restored_after_boot_retry", **retry_res}
+
+        with self._io_lock:
+            with self._state_lock:
+                self._syncing = True
+                self._dirty = False
+
+            tmp_dir = Path(tempfile.mkdtemp(prefix="seu_luiz_vsync_"))
+            try:
+                snap_file = tmp_dir / "financeiro.db"
+                snap_info = create_sqlite_snapshot(self.db_path, snap_file)
+                uploads_local = self._scan_local_uploads()
+
+                if (
+                    not force
+                    and self.meta.get("db_sha256") == snap_info["sha256"]
+                    and self.meta.get("uploads") == uploads_local
+                ):
+                    return {"ok": True, "action": "up_to_date", "revision": self.meta.get("revision", 0)}
+
+                vclient = self._build_vault_client()
+                remote_state = vclient.read_branch_state()
+                remote_blobs = (remote_state or {}).get("blobs") or {}
+
+                remote_manifest: dict[str, Any] = {}
+                if "manifest.json.enc" in remote_blobs:
+                    try:
+                        raw_mf = vclient.download_decrypted(remote_blobs["manifest.json.enc"]["sha"])
+                        remote_manifest = json.loads(raw_mf.decode("utf-8"))
+                    except Exception:
+                        remote_manifest = {}
+
+                remote_users = int(((remote_manifest.get("counts") or {}).get("usuarios")) or 0)
+                local_users = int(snap_info["counts"].get("usuarios") or 0)
+                local_rev = int(self.meta.get("revision") or 0)
+                remote_rev = int(remote_manifest.get("revision") or 0)
+                remote_sha = str(remote_manifest.get("db_sha256") or "")
+
+                if not force and remote_users > 0 and local_users == 0:
+                    msg = (
+                        "Proteção anti-perda ativada: o cofre em nuvem possui dados salvos e o banco local está vazio."
+                    )
+                    with self._state_lock:
+                        self._last_error = msg
+                    return {"ok": False, "blocked_anti_wipe": True, "detail": msg}
+
+                if not force and local_rev == 0 and remote_rev > 0 and remote_sha and remote_sha != snap_info["sha256"]:
+                    msg = f"Proteção anti-perda ativada: o cofre já possui revisão ativa (#{remote_rev})."
+                    with self._state_lock:
+                        self._last_error = msg
+                    return {"ok": False, "blocked_anti_wipe": True, "blocked_remote_newer": True, "detail": msg}
+
+                new_tree_blobs: dict[str, str] = {}
+                db_changed = (
+                    force
+                    or (remote_sha != snap_info["sha256"])
+                    or ("financeiro.db.enc" not in remote_blobs)
+                )
+                if db_changed:
+                    new_tree_blobs["financeiro.db.enc"] = vclient.upload_encrypted(snap_file.read_bytes())
+                else:
+                    new_tree_blobs["financeiro.db.enc"] = remote_blobs["financeiro.db.enc"]["sha"]
+
+                remote_uploads_manifest = remote_manifest.get("uploads") or {}
+                uploaded_media_count = 0
+                for fname, fmeta in uploads_local.items():
+                    enc_path = f"uploads/{fname}.enc"
+                    prev_m = remote_uploads_manifest.get(fname) or {}
+                    if (
+                        not force
+                        and enc_path in remote_blobs
+                        and prev_m.get("sha256") == fmeta["sha256"]
+                        and int(prev_m.get("size") or -1) == fmeta["size"]
+                    ):
+                        new_tree_blobs[enc_path] = remote_blobs[enc_path]["sha"]
+                        continue
+                    local_f = self.uploads_dir / fname
+                    if local_f.is_file():
+                        new_tree_blobs[enc_path] = vclient.upload_encrypted(local_f.read_bytes())
+                        uploaded_media_count += 1
+
+                now_ts = time.time()
+                next_rev = max(local_rev, remote_rev) + 1
+                manifest_payload = {
+                    "schema_version": 2,
+                    "sistema": "Administração Financeira",
+                    "provider": "github_vault",
+                    "revision": next_rev,
+                    "updated_at": now_ts,
+                    "updated_at_iso": _iso_utc(now_ts),
+                    "source": "render" if self.is_cloud_container else "desktop",
+                    "reason": reason,
+                    "db_sha256": snap_info["sha256"],
+                    "db_size": snap_info["size"],
+                    "counts": snap_info["counts"],
+                    "uploads": uploads_local,
+                }
+                new_tree_blobs["manifest.json.enc"] = vclient.upload_encrypted(
+                    json.dumps(manifest_payload, ensure_ascii=False, indent=2).encode("utf-8")
+                )
+
+                last_hist_ts = float(self.meta.get("last_history_snapshot_at") or 0)
+                rotate_parent = (now_ts - last_hist_ts) >= 3600
+                vclient.commit_tree(
+                    blob_entries=new_tree_blobs,
+                    prev_state=remote_state,
+                    rotate_parent=rotate_parent,
+                    message=f"vault sync rev #{next_rev} ({reason})",
+                )
+                if rotate_parent:
+                    self.meta["last_history_snapshot_at"] = now_ts
+
+                with self._state_lock:
+                    self.meta.update(
+                        revision=next_rev,
+                        db_sha256=snap_info["sha256"],
+                        db_size=snap_info["size"],
+                        counts=snap_info["counts"],
+                        uploads=uploads_local,
+                        folder_url=vclient.repo_url,
+                        last_sync_at=now_ts,
+                    )
+                    self._last_error = None
+                    self._save_meta()
+
+                return {
+                    "ok": True,
+                    "action": "synced",
+                    "provider": "github_vault",
+                    "revision": next_rev,
+                    "folder_url": vclient.repo_url,
+                    "db_uploaded": db_changed,
+                    "uploads_uploaded": uploaded_media_count,
+                    "counts": snap_info["counts"],
+                }
+            except Exception as exc:
+                with self._state_lock:
+                    self._last_error = str(exc)
+                raise
+            finally:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                with self._state_lock:
+                    self._syncing = False
+
+    def _vault_restore(
+        self,
+        *,
+        force: bool = False,
+        on_boot: bool = False,
+        merge_pre_hydration_local: bool = False,
+    ) -> dict[str, Any]:
+        if not self.is_vault_connected():
+            return {"ok": False, "restored": False, "reason": "not_connected"}
+
+        with self._io_lock:
+            with self._state_lock:
+                self._restoring = True
+
+            tmp_dir = Path(tempfile.mkdtemp(prefix="seu_luiz_vrestore_"))
+            try:
+                vclient = self._build_vault_client()
+                remote_state = vclient.read_branch_state()
+                remote_blobs = (remote_state or {}).get("blobs") or {}
+                if not remote_state or "financeiro.db.enc" not in remote_blobs:
+                    self._boot_restore_failed = False
+                    if on_boot and self.db_path.is_file():
+                        self.notify_change("initial_seed_on_boot")
+                    return {
+                        "ok": True,
+                        "restored": False,
+                        "remote_backup_found": False,
+                        "reason": "remote_db_not_found",
+                    }
+
+                remote_manifest: dict[str, Any] = {}
+                if "manifest.json.enc" in remote_blobs:
+                    try:
+                        raw_mf = vclient.download_decrypted(remote_blobs["manifest.json.enc"]["sha"])
+                        remote_manifest = json.loads(raw_mf.decode("utf-8"))
+                    except Exception:
+                        remote_manifest = {}
+
+                local_exists = self.db_path.is_file()
+                local_sha256 = ""
+                local_snap = tmp_dir / "local_check.db"
+                if local_exists:
+                    try:
+                        info_local = create_sqlite_snapshot(self.db_path, local_snap)
+                        local_sha256 = info_local["sha256"]
+                    except Exception:
+                        local_sha256 = ""
+
+                remote_sha = str(remote_manifest.get("db_sha256") or "")
+                db_restored = False
+                merged_local_users = 0
+
+                if force or not remote_sha or remote_sha != local_sha256 or not local_exists:
+                    dl_db = tmp_dir / "financeiro_remote.db"
+                    dl_db.write_bytes(
+                        vclient.download_decrypted(remote_blobs["financeiro.db.enc"]["sha"])
+                    )
+                    validate_sqlite_file(dl_db)
+
+                    if merge_pre_hydration_local and local_snap.is_file():
+                        merged_local_users = merge_missing_users_sqlite(dl_db, local_snap)
+
+                    remote_sha = _sha256_file(dl_db)
+                    if local_exists and local_sha256 and local_sha256 != remote_sha:
+                        self._save_local_safety_snapshot("antes_restauracao")
+
+                    if self._engine_disposer:
+                        try:
+                            self._engine_disposer()
+                        except Exception:
+                            pass
+
+                    self.db_path.parent.mkdir(parents=True, exist_ok=True)
+                    if not self.db_path.exists():
+                        _atomic_write_bytes(self.db_path, dl_db.read_bytes())
+                    else:
+                        src_conn = sqlite3.connect(str(dl_db), timeout=30.0)
+                        dst_conn = sqlite3.connect(str(self.db_path), timeout=30.0)
+                        try:
+                            with dst_conn:
+                                src_conn.backup(dst_conn)
+                            try:
+                                dst_conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                            except Exception:
+                                pass
+                        finally:
+                            dst_conn.close()
+                            src_conn.close()
+
+                    if self._schema_migrator:
+                        self._schema_migrator()
+                    db_restored = True
+
+                uploads_restored = 0
+                has_manifest_uploads = isinstance(remote_manifest.get("uploads"), dict)
+                remote_uploads_meta: dict[str, Any] = (
+                    remote_manifest["uploads"] if has_manifest_uploads else {}
+                )
+                self.uploads_dir.mkdir(parents=True, exist_ok=True)
+
+                for b_path, b_info in remote_blobs.items():
+                    if not b_path.startswith("uploads/") or not b_path.endswith(".enc"):
+                        continue
+                    raw_name = b_path[len("uploads/") : -len(".enc")]
+                    safe_name = Path(raw_name).name
+                    if not safe_name or safe_name in (".", "..") or safe_name != raw_name:
+                        continue
+                    if has_manifest_uploads and safe_name not in remote_uploads_meta:
+                        continue
+                    target_f = self.uploads_dir / safe_name
+                    expected_sha = (remote_uploads_meta.get(safe_name) or {}).get("sha256")
+                    if target_f.is_file() and expected_sha and _sha256_file(target_f) == expected_sha:
+                        continue
+                    f_bytes = vclient.download_decrypted(b_info["sha"])
+                    _atomic_write_bytes(target_f, f_bytes)
+                    uploads_restored += 1
+
+                if has_manifest_uploads and not merge_pre_hydration_local:
+                    candidates = (
+                        {
+                            p.name
+                            for p in self.uploads_dir.iterdir()
+                            if p.is_file() and not p.name.startswith(".")
+                        }
+                        if force and self.uploads_dir.is_dir()
+                        else set((self.meta.get("uploads") or {}).keys())
+                    )
+                    for stale_name in candidates - set(remote_uploads_meta.keys()):
+                        stale_f = self.uploads_dir / Path(stale_name).name
+                        if stale_f.is_file():
+                            try:
+                                stale_f.unlink()
+                            except OSError:
+                                pass
+
+                final_snap = tmp_dir / "post_restore_snap.db"
+                final_info = create_sqlite_snapshot(self.db_path, final_snap)
+                now_ts = time.time()
+                with self._state_lock:
+                    self.meta.update(
+                        revision=int(remote_manifest.get("revision") or self.meta.get("revision") or 1),
+                        db_sha256=final_info["sha256"],
+                        db_size=final_info["size"],
+                        counts=final_info["counts"],
+                        uploads=self._scan_local_uploads(),
+                        folder_url=vclient.repo_url,
+                        last_restore_at=now_ts,
+                    )
+                    if not self.meta.get("last_sync_at") and remote_manifest.get("updated_at"):
+                        self.meta["last_sync_at"] = float(remote_manifest["updated_at"])
+                    self._dirty = False
+                    self._boot_restore_failed = False
+                    self._last_error = None
+                    self._save_meta()
+
+                return {
+                    "ok": True,
+                    "restored": db_restored or (uploads_restored > 0),
+                    "remote_backup_found": True,
+                    "db_restored": db_restored,
+                    "uploads_restored": uploads_restored,
+                    "merged_local_users": merged_local_users,
+                    "counts": final_info["counts"],
+                    "folder_url": vclient.repo_url,
+                }
+            except Exception as exc:
+                with self._state_lock:
+                    if on_boot:
+                        self._boot_restore_failed = True
+                    self._last_error = f"Falha ao restaurar do cofre em nuvem: {exc}"
+                if on_boot:
+                    return {"ok": False, "restored": False, "error": str(exc)}
+                raise
+            finally:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                with self._state_lock:
+                    self._restoring = False
+
     def sync_now(self, *, force: bool = False, reason: str = "manual") -> dict[str, Any]:
+        if self.is_vault_connected():
+            return self._vault_sync_now(force=force, reason=reason)
         if not self.is_connected():
             return {"ok": False, "skipped": True, "reason": "not_connected"}
         if not self.db_path.is_file():
@@ -1309,6 +1795,8 @@ class CloudSyncManager:
         force: bool = False,
         on_boot: bool = False,
     ) -> dict[str, Any]:
+        if self.is_vault_connected():
+            return self._vault_restore(force=force, on_boot=on_boot)
         if not self.is_connected():
             return {"ok": False, "restored": False, "reason": "not_connected"}
 

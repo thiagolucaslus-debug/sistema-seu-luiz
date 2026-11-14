@@ -4,6 +4,7 @@ from sqlalchemy import extract
 from database import get_db
 import models
 import auth
+from tenancy import bump_user_sync_rev
 from services.calculos import calcular_saldo_conta
 from pydantic import BaseModel
 from typing import Optional, List
@@ -33,7 +34,14 @@ class ContaUpdate(BaseModel):
 
 @router.get("/")
 def listar_contas(db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
-    contas = db.query(models.ContaBancaria).filter(models.ContaBancaria.ativa == True).all()
+    contas = (
+        db.query(models.ContaBancaria)
+        .filter(
+            models.ContaBancaria.usuario_id == usuario.id,
+            models.ContaBancaria.ativa == True,
+        )
+        .all()
+    )
     resultado = []
     for c in contas:
         saldo_atual = calcular_saldo_conta(db, c.id)
@@ -53,35 +61,50 @@ def listar_contas(db: Session = Depends(get_db), usuario = Depends(auth.get_usua
 
 @router.post("/")
 def criar_conta(data: ContaCreate, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
-    conta = models.ContaBancaria(**data.model_dump())
+    conta = models.ContaBancaria(**data.model_dump(), usuario_id=usuario.id)
     db.add(conta)
+    bump_user_sync_rev(db, usuario.id)
     db.commit()
     db.refresh(conta)
     return conta
 
 @router.put("/{id}")
 def atualizar_conta(id: int, data: ContaUpdate, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
-    conta = db.query(models.ContaBancaria).filter(models.ContaBancaria.id == id).first()
+    conta = (
+        db.query(models.ContaBancaria)
+        .filter(models.ContaBancaria.id == id, models.ContaBancaria.usuario_id == usuario.id)
+        .first()
+    )
     if not conta:
         raise HTTPException(status_code=404, detail="Conta bancária não encontrada.")
     for k, v in data.model_dump(exclude_none=True).items():
         setattr(conta, k, v)
+    bump_user_sync_rev(db, usuario.id)
     db.commit()
     db.refresh(conta)
     return conta
 
 @router.delete("/{id}")
 def desativar_conta(id: int, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
-    conta = db.query(models.ContaBancaria).filter(models.ContaBancaria.id == id).first()
+    conta = (
+        db.query(models.ContaBancaria)
+        .filter(models.ContaBancaria.id == id, models.ContaBancaria.usuario_id == usuario.id)
+        .first()
+    )
     if not conta:
         raise HTTPException(status_code=404, detail="Conta bancária não encontrada.")
     conta.ativa = False
+    bump_user_sync_rev(db, usuario.id)
     db.commit()
     return {"ok": True, "mensagem": "Conta desativada com sucesso."}
 
 @router.get("/{id}/extrato")
 def extrato_conta(id: int, mes: Optional[int] = None, ano: Optional[int] = None, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
-    conta = db.query(models.ContaBancaria).filter(models.ContaBancaria.id == id).first()
+    conta = (
+        db.query(models.ContaBancaria)
+        .filter(models.ContaBancaria.id == id, models.ContaBancaria.usuario_id == usuario.id)
+        .first()
+    )
     if not conta:
         raise HTTPException(status_code=404, detail="Conta bancária não encontrada.")
 
@@ -89,6 +112,7 @@ def extrato_conta(id: int, mes: Optional[int] = None, ano: Optional[int] = None,
 
     # Busca lançamentos vinculados a esta conta
     q_lanc = db.query(models.Lancamento).filter(
+        models.Lancamento.usuario_id == usuario.id,
         (models.Lancamento.conta_id == id) | (models.Lancamento.conta_destino_id == id),
         models.Lancamento.cancelado == False
     )
@@ -116,7 +140,10 @@ def extrato_conta(id: int, mes: Optional[int] = None, ano: Optional[int] = None,
         })
 
     # Adiciona pagamentos recebidos de pessoas creditados nesta conta
-    q_pags = db.query(models.PagamentoPessoa).filter(models.PagamentoPessoa.conta_id == id)
+    q_pags = db.query(models.PagamentoPessoa).filter(
+        models.PagamentoPessoa.conta_id == id,
+        models.PagamentoPessoa.usuario_id == usuario.id,
+    )
     if mes and ano:
         _, ult = calendar.monthrange(ano, mes)
         q_pags = q_pags.filter(
@@ -136,7 +163,10 @@ def extrato_conta(id: int, mes: Optional[int] = None, ano: Optional[int] = None,
         })
 
     # Adiciona pagamentos de faturas debitados desta conta
-    q_fat = db.query(models.PagamentoFatura).filter(models.PagamentoFatura.conta_id == id)
+    q_fat = db.query(models.PagamentoFatura).filter(
+        models.PagamentoFatura.conta_id == id,
+        models.PagamentoFatura.usuario_id == usuario.id,
+    )
     if mes and ano:
         _, ult = calendar.monthrange(ano, mes)
         q_fat = q_fat.filter(

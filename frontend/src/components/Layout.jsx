@@ -19,7 +19,7 @@ export default function Layout({ children }) {
   const navigate = useNavigate();
   const { usuario, logout } = useAuth();
   const { theme, setTheme } = useAppearance();
-  const nome = usuario?.nome || 'Seu Luiz';
+  const nome = usuario?.nome || 'Administração Financeira';
   const foto = usuario?.logo_path;
   const themeLabel = theme === 'dark' ? 'Escuro' : 'Claro';
   const themeActionLabel = theme === 'dark' ? 'Ativar modo claro' : 'Ativar modo escuro';
@@ -29,15 +29,16 @@ export default function Layout({ children }) {
     const checar = async () => {
       try {
         const res = await solicitacoes.contarPendentes();
-        if (ativo && res.data?.pendentes !== undefined) {
-          setPendentesCount(res.data.pendentes);
+        const totalPend = res.data?.pendentes ?? res.data?.count;
+        if (ativo && totalPend !== undefined) {
+          setPendentesCount(totalPend);
         }
       } catch (e) {
         // Silencioso se rota pública ou sem token
       }
     };
     checar();
-    const interval = setInterval(checar, 25000);
+    const interval = setInterval(checar, 12000);
     return () => {
       ativo = false;
       clearInterval(interval);

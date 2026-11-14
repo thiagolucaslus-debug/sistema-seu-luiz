@@ -10,6 +10,7 @@ echo.
 
 set PASTA=%~dp0
 set PYTHON=C:\Users\thiag\AppData\Local\Programs\Python\Python312\python.exe
+set SEU_LUIZ_DESKTOP_MODE=1
 
 echo [1/3] Liberando portas anteriores caso estejam ocupadas...
 for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":8000 "') do taskkill /F /PID %%a >nul 2>&1

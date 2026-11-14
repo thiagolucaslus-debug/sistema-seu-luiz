@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 import models
 import auth
+from tenancy import bump_user_sync_rev
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import date
@@ -27,11 +28,16 @@ class SubcategoriaCreate(BaseModel):
 @router.get("/")
 def listar_modulos(mes: Optional[int] = None, ano: Optional[int] = None, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
     hoje = date.today()
-    modulos = db.query(models.Modulo).filter(models.Modulo.ativo == True).all()
+    modulos = (
+        db.query(models.Modulo)
+        .filter(models.Modulo.usuario_id == usuario.id, models.Modulo.ativo == True)
+        .all()
+    )
     resultado = []
     for m in modulos:
         # Gastos deste mês vinculados a este módulo
         parcelas_mes = db.query(models.Parcela).join(models.Lancamento).filter(
+            models.Lancamento.usuario_id == usuario.id,
             models.Lancamento.modulo_id == m.id,
             models.Parcela.mes == (mes or hoje.month),
             models.Parcela.ano == (ano or hoje.year),
@@ -52,39 +58,55 @@ def listar_modulos(mes: Optional[int] = None, ano: Optional[int] = None, db: Ses
 
 @router.post("/")
 def criar_modulo(data: ModuloCreate, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
-    modulo = models.Modulo(**data.model_dump())
+    modulo = models.Modulo(**data.model_dump(), usuario_id=usuario.id)
     db.add(modulo)
+    bump_user_sync_rev(db, usuario.id)
     db.commit()
     db.refresh(modulo)
     return modulo
 
 @router.put("/{id}")
 def atualizar_modulo(id: int, data: ModuloUpdate, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
-    modulo = db.query(models.Modulo).filter(models.Modulo.id == id).first()
+    modulo = (
+        db.query(models.Modulo)
+        .filter(models.Modulo.id == id, models.Modulo.usuario_id == usuario.id)
+        .first()
+    )
     if not modulo:
         raise HTTPException(status_code=404, detail="Módulo não encontrado.")
     for k, v in data.model_dump(exclude_none=True).items():
         setattr(modulo, k, v)
+    bump_user_sync_rev(db, usuario.id)
     db.commit()
     db.refresh(modulo)
     return modulo
 
 @router.delete("/{id}")
 def desativar_modulo(id: int, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
-    modulo = db.query(models.Modulo).filter(models.Modulo.id == id).first()
+    modulo = (
+        db.query(models.Modulo)
+        .filter(models.Modulo.id == id, models.Modulo.usuario_id == usuario.id)
+        .first()
+    )
     if not modulo:
         raise HTTPException(status_code=404, detail="Módulo não encontrado.")
     modulo.ativo = False
+    bump_user_sync_rev(db, usuario.id)
     db.commit()
     return {"ok": True, "mensagem": "Módulo desativado."}
 
 @router.post("/subcategorias")
 def criar_subcategoria(data: SubcategoriaCreate, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
-    modulo = db.query(models.Modulo).filter(models.Modulo.id == data.modulo_id).first()
+    modulo = (
+        db.query(models.Modulo)
+        .filter(models.Modulo.id == data.modulo_id, models.Modulo.usuario_id == usuario.id)
+        .first()
+    )
     if not modulo:
         raise HTTPException(status_code=404, detail="Módulo não encontrado.")
     sub = models.Subcategoria(**data.model_dump())
     db.add(sub)
+    bump_user_sync_rev(db, usuario.id)
     db.commit()
     db.refresh(sub)
     return sub
@@ -95,11 +117,16 @@ def gastos_modulo(id: int, mes: Optional[int] = None, ano: Optional[int] = None,
     mes = mes or hoje.month
     ano = ano or hoje.year
 
-    modulo = db.query(models.Modulo).filter(models.Modulo.id == id).first()
+    modulo = (
+        db.query(models.Modulo)
+        .filter(models.Modulo.id == id, models.Modulo.usuario_id == usuario.id)
+        .first()
+    )
     if not modulo:
         raise HTTPException(status_code=404, detail="Módulo não encontrado.")
 
     parcelas = db.query(models.Parcela).join(models.Lancamento).filter(
+        models.Lancamento.usuario_id == usuario.id,
         models.Lancamento.modulo_id == id,
         models.Parcela.mes == mes,
         models.Parcela.ano == ano,

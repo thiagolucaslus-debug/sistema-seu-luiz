@@ -17,8 +17,12 @@ export default function Login() {
 
   useEffect(() => {
     authApi.checkSetup()
-      .then(res => { setIsSetup(res.data.configured); })
-      .catch(() => { setIsSetup(false); })
+      .then(res => {
+        const configured = Boolean(res.data?.configured);
+        setIsSetup(configured);
+        if (!configured) setModo('cadastro');
+      })
+      .catch(() => { setIsSetup(true); })
       .finally(() => { setLoading(false); });
   }, []);
 
@@ -27,13 +31,12 @@ export default function Login() {
     setSubmitting(true);
     setError('');
     try {
-      if (!isSetup) {
-        // Primeiro acesso — cria o usuário mestre
-        await authApi.setup({ nome: form.nome || 'Administrador', usuario: form.usuario, senha: form.senha });
-        await login(form.usuario, form.senha);
-      } else if (modo === 'cadastro') {
-        // Cadastro de novo perfil
-        await authApi.register({ nome: form.nome, usuario: form.usuario, senha: form.senha });
+      if (modo === 'cadastro') {
+        if (!isSetup) {
+          await authApi.setup({ nome: form.nome || 'Administrador', usuario: form.usuario, senha: form.senha });
+        } else {
+          await authApi.register({ nome: form.nome, usuario: form.usuario, senha: form.senha });
+        }
         await login(form.usuario, form.senha);
       } else {
         await login(form.usuario, form.senha);
@@ -57,7 +60,7 @@ export default function Login() {
     );
   }
 
-  const isCadastro = !isSetup || modo === 'cadastro';
+  const isCadastro = modo === 'cadastro';
 
   return (
     <div className="login-background min-h-screen flex items-center justify-center p-4">
@@ -70,33 +73,31 @@ export default function Login() {
           </div>
           <h1 className="text-2xl font-black text-ink tracking-tight">Administração Financeira</h1>
           <p className="text-slate-400 text-xs mt-1">
-            Gestão pessoal de contas, cartões e fechamentos
+            Mesmo usuário e senha em qualquer PC e no celular
           </p>
         </div>
 
         {/* Seletor Entrar / Criar Novo Perfil */}
-        {isSetup && (
-          <div className="flex gap-1 p-1 rounded-xl bg-slate-900 border border-slate-800 mb-6">
-            <button
-              type="button"
-              onClick={() => { setModo('login'); setError(''); }}
-              className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${
-                modo === 'login' ? 'bg-blue-600 text-white shadow' : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              Entrar
-            </button>
-            <button
-              type="button"
-              onClick={() => { setModo('cadastro'); setError(''); }}
-              className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${
-                modo === 'cadastro' ? 'bg-blue-600 text-white shadow' : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              Criar Novo Perfil
-            </button>
-          </div>
-        )}
+        <div className="flex gap-1 p-1 rounded-xl bg-slate-900 border border-slate-800 mb-6">
+          <button
+            type="button"
+            onClick={() => { setModo('login'); setError(''); }}
+            className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${
+              modo === 'login' ? 'bg-blue-600 text-white shadow' : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            Entrar
+          </button>
+          <button
+            type="button"
+            onClick={() => { setModo('cadastro'); setError(''); }}
+            className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${
+              modo === 'cadastro' ? 'bg-blue-600 text-white shadow' : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            Criar Novo Perfil
+          </button>
+        </div>
 
         {error && (
           <div className="bg-red-500/10 border border-red-500/20 text-rose-400 px-4 py-3 rounded-xl mb-5 text-sm font-medium flex items-center gap-2">

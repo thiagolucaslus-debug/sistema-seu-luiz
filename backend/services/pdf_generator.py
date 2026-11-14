@@ -82,7 +82,7 @@ def gerar_pdf_fechamento(db: Session, pessoa_id: int, mes: int, ano: int, nome_s
     os.makedirs(pdf_dir, exist_ok=True)
 
     nome_sanitizado = "".join(c for c in pessoa.nome if c.isalnum() or c in (" ", "_", "-")).rstrip().replace(" ", "_")
-    filename = f"fechamento_{nome_sanitizado}_{mes:02d}_{ano}.pdf"
+    filename = f"fechamento_{pessoa.id}_{nome_sanitizado}_{mes:02d}_{ano}.pdf"
     filepath = os.path.join(pdf_dir, filename)
 
     doc = SimpleDocTemplate(

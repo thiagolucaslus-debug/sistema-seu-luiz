@@ -107,6 +107,8 @@ export default function LancarCompra() {
     );
   }
 
+  const gestorNome = dados?.gestor_nome || 'o responsável';
+
   if (erro) {
     return (
       <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4">
@@ -114,7 +116,7 @@ export default function LancarCompra() {
           <AlertCircle size={44} className="text-rose-500 mx-auto" />
           <h2 className="text-xl font-black text-white">Link Indisponível</h2>
           <p className="text-sm text-slate-400">{erro}</p>
-          <p className="text-xs text-slate-500">Peça um novo link para o Seu Luiz pelo WhatsApp.</p>
+          <p className="text-xs text-slate-500">Peça um novo link pelo WhatsApp.</p>
         </div>
       </div>
     );
@@ -129,7 +131,7 @@ export default function LancarCompra() {
           </div>
           <h2 className="text-2xl font-black text-white">Lançamento Enviado!</h2>
           <p className="text-sm text-slate-300">
-            Sua compra de <strong className="text-emerald-400">R$ {parseFloat(valor).toFixed(2).replace('.', ',')}</strong> foi enviada para o Seu Luiz e aparecerá na lista de aprovações dele.
+            Sua compra de <strong className="text-emerald-400">R$ {parseFloat(valor).toFixed(2).replace('.', ',')}</strong> foi enviada para <strong>{gestorNome}</strong> e já aparece na lista de aprovações no celular e no computador.
           </p>
           <button
             onClick={() => {
@@ -200,13 +202,13 @@ export default function LancarCompra() {
                 }`}
               >
                 <HandCoins size={16} />
-                <span>Comprei pro Seu Luiz</span>
+                <span className="truncate">Comprei p/ {gestorNome}</span>
               </button>
             </div>
             <p className="text-[11px] text-slate-400 mt-1.5">
               {tipo === 'compra_cartao'
-                ? 'Compra parcelada ou à vista feita no cartão de crédito do Seu Luiz.'
-                : 'Você pagou algo do seu bolso para o Seu Luiz (o valor será abatido da sua dívida).'}
+                ? `Compra parcelada ou à vista feita no cartão de crédito de ${gestorNome}.`
+                : `Você pagou algo do seu bolso para ${gestorNome} (o valor será abatido da sua dívida).`}
             </p>
           </div>
 
@@ -316,7 +318,7 @@ export default function LancarCompra() {
             <textarea
               rows={2}
               className="input text-white bg-slate-950 text-sm"
-              placeholder="Ex: Compra autorizada pelo Seu Luiz"
+              placeholder={`Ex: Compra autorizada por ${gestorNome}`}
               value={observacoes}
               onChange={e => setObservacoes(e.target.value)}
             />

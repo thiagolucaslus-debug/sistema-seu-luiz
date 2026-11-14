@@ -31,6 +31,9 @@ export function describeCloudState(status = {}) {
   if (status.syncing) {
     return { badgeClass: 'badge-blue', label: 'Salvando no Google Drive…' };
   }
+  if (status.vault_connected) {
+    return { badgeClass: 'badge-green', label: 'Cofre Criptografado 24/7 Ativo' };
+  }
   if (status.connected) {
     return { badgeClass: 'badge-green', label: 'Google Drive Conectado' };
   }

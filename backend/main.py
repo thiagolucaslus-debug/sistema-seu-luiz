@@ -18,7 +18,9 @@ from sqlalchemy.orm import Session
 
 from database import engine, Base, DATA_DIR, DB_PATH, CLOUD_CONFIG_DIR
 import models
+from tenancy import USER_OWNED_TABLES
 from services.cloud_sync import CloudSyncManager
+from services.hub_sync import HubSyncASGIMiddleware, HubSyncClient
 from routers import (
     auth,
     contas,
@@ -30,11 +32,12 @@ from routers import (
     whatsapp,
     solicitacoes,
     cloud,
+    sync_hub,
 )
 
 
 def ensure_schema_and_migrations() -> None:
-    """Garante WAL mode, tabelas SQLite e migrações incrementais seguras."""
+    """Garante WAL mode, tabelas SQLite, isolamento multiusuário e migrações incrementais seguras."""
     with engine.begin() as connection:
         try:
             connection.exec_driver_sql("PRAGMA journal_mode=WAL;")
@@ -45,6 +48,15 @@ def ensure_schema_and_migrations() -> None:
     Base.metadata.create_all(bind=engine)
 
     with engine.begin() as connection:
+        colunas_usr = connection.exec_driver_sql("PRAGMA table_info(usuarios)").all()
+        if not any(coluna[1] == "sync_rev" for coluna in colunas_usr):
+            connection.exec_driver_sql(
+                "ALTER TABLE usuarios ADD COLUMN sync_rev INTEGER NOT NULL DEFAULT 1"
+            )
+        connection.exec_driver_sql(
+            "UPDATE usuarios SET sync_rev = 1 WHERE sync_rev IS NULL"
+        )
+
         colunas_pag = connection.exec_driver_sql("PRAGMA table_info(pagamentos_pessoa)").all()
         if not any(coluna[1] == "forma_pagamento" for coluna in colunas_pag):
             connection.exec_driver_sql(
@@ -56,6 +68,27 @@ def ensure_schema_and_migrations() -> None:
             connection.exec_driver_sql(
                 "ALTER TABLE pessoas ADD COLUMN token_acesso VARCHAR(64)"
             )
+
+        for tbl in USER_OWNED_TABLES:
+            cols = connection.exec_driver_sql(f"PRAGMA table_info({tbl})").all()
+            if not any(c[1] == "usuario_id" for c in cols):
+                connection.exec_driver_sql(
+                    f"ALTER TABLE {tbl} ADD COLUMN usuario_id INTEGER REFERENCES usuarios(id)"
+                )
+            connection.exec_driver_sql(
+                f"CREATE INDEX IF NOT EXISTS ix_{tbl}_usuario_id ON {tbl} (usuario_id)"
+            )
+
+        primary_user = connection.exec_driver_sql(
+            "SELECT id FROM usuarios ORDER BY id ASC LIMIT 1"
+        ).fetchone()
+        if primary_user:
+            primary_uid = int(primary_user[0])
+            for tbl in USER_OWNED_TABLES:
+                connection.exec_driver_sql(
+                    f"UPDATE {tbl} SET usuario_id = ? WHERE usuario_id IS NULL",
+                    (primary_uid,),
+                )
 
     with Session(bind=engine) as session:
         pessoas_sem_token = (
@@ -115,14 +148,18 @@ async def lifespan(_app: FastAPI):
         cloud_sync_manager.shutdown()
 
 
+hub_sync_client = HubSyncClient(data_dir=DATA_DIR, db_path=DB_PATH)
+
 app = FastAPI(
     title="Administração Financeira API",
     description="API REST para controle e administração financeira pessoal completa",
-    version="2.1.0",
+    version="2.2.0",
     lifespan=lifespan,
 )
 
-# Permite acesso local, de túnel (Cloudflare), Render e rede móvel
+app.add_middleware(HubSyncASGIMiddleware, hub_client=hub_sync_client)
+
+# Permite acesso local, Desktop Electron, Render e rede móvel
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -139,6 +176,7 @@ async def auto_cloud_sync_on_mutations(request: Request, call_next):
         request.method in ("POST", "PUT", "PATCH", "DELETE")
         and response.status_code < 400
         and not request.url.path.startswith("/cloud/")
+        and not request.url.path.startswith("/sync/")
         and not request.url.path.startswith("/auth/login")
         and not request.url.path.startswith("/whatsapp/")
     ):
@@ -156,6 +194,7 @@ app.include_router(relatorios.router)
 app.include_router(whatsapp.router)
 app.include_router(solicitacoes.router)
 app.include_router(cloud.router)
+app.include_router(sync_hub.router)
 
 # Diretório persistente para PDFs gerados
 pdfs_dir = os.path.join(DATA_DIR, "pdfs")

@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 import models
 import auth
+from tenancy import bump_user_sync_rev
 from services.calculos import calcular_total_fatura_cartao
 from pydantic import BaseModel
 from typing import Optional, List
@@ -38,7 +39,14 @@ class PagarFaturaRequest(BaseModel):
 @router.get("/")
 def listar_cartoes(inativos: bool = False, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
     hoje = date.today()
-    cartoes = db.query(models.Cartao).filter(models.Cartao.ativo == (not inativos)).all()
+    cartoes = (
+        db.query(models.Cartao)
+        .filter(
+            models.Cartao.usuario_id == usuario.id,
+            models.Cartao.ativo == (not inativos),
+        )
+        .all()
+    )
     resultado = []
     for c in cartoes:
         fatura_atual = calcular_total_fatura_cartao(db, c.id, hoje.month, hoje.year)
@@ -57,35 +65,50 @@ def listar_cartoes(inativos: bool = False, db: Session = Depends(get_db), usuari
 
 @router.post("/")
 def criar_cartao(data: CartaoCreate, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
-    cartao = models.Cartao(**data.model_dump())
+    cartao = models.Cartao(**data.model_dump(), usuario_id=usuario.id)
     db.add(cartao)
+    bump_user_sync_rev(db, usuario.id)
     db.commit()
     db.refresh(cartao)
     return cartao
 
 @router.put("/{id}")
 def atualizar_cartao(id: int, data: CartaoUpdate, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
-    cartao = db.query(models.Cartao).filter(models.Cartao.id == id).first()
+    cartao = (
+        db.query(models.Cartao)
+        .filter(models.Cartao.id == id, models.Cartao.usuario_id == usuario.id)
+        .first()
+    )
     if not cartao:
         raise HTTPException(status_code=404, detail="Cartão não encontrado.")
     for k, v in data.model_dump(exclude_none=True).items():
         setattr(cartao, k, v)
+    bump_user_sync_rev(db, usuario.id)
     db.commit()
     db.refresh(cartao)
     return cartao
 
 @router.delete("/{id}")
 def desativar_cartao(id: int, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
-    cartao = db.query(models.Cartao).filter(models.Cartao.id == id).first()
+    cartao = (
+        db.query(models.Cartao)
+        .filter(models.Cartao.id == id, models.Cartao.usuario_id == usuario.id)
+        .first()
+    )
     if not cartao:
         raise HTTPException(status_code=404, detail="Cartão não encontrado.")
     cartao.ativo = False
+    bump_user_sync_rev(db, usuario.id)
     db.commit()
     return {"ok": True, "mensagem": "Cartão desativado."}
 
 @router.get("/{id}/faturas")
 def faturas_cartao(id: int, meses_atras: int = 6, meses_frente: int = 6, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
-    cartao = db.query(models.Cartao).filter(models.Cartao.id == id).first()
+    cartao = (
+        db.query(models.Cartao)
+        .filter(models.Cartao.id == id, models.Cartao.usuario_id == usuario.id)
+        .first()
+    )
     if not cartao:
         raise HTTPException(status_code=404, detail="Cartão não encontrado.")
 
@@ -161,12 +184,29 @@ def faturas_cartao(id: int, meses_atras: int = 6, meses_frente: int = 6, db: Ses
 
 @router.post("/{id}/pagar-fatura")
 def pagar_fatura(id: int, req: PagarFaturaRequest, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
-    cartao = db.query(models.Cartao).filter(models.Cartao.id == id).first()
+    cartao = (
+        db.query(models.Cartao)
+        .filter(models.Cartao.id == id, models.Cartao.usuario_id == usuario.id)
+        .first()
+    )
     if not cartao:
         raise HTTPException(status_code=404, detail="Cartão não encontrado.")
 
+    if req.conta_id is not None:
+        conta_ok = (
+            db.query(models.ContaBancaria)
+            .filter(
+                models.ContaBancaria.id == req.conta_id,
+                models.ContaBancaria.usuario_id == usuario.id,
+            )
+            .first()
+        )
+        if not conta_ok:
+            raise HTTPException(status_code=400, detail="Conta bancária inválida.")
+
     existente = db.query(models.PagamentoFatura).filter(
         models.PagamentoFatura.cartao_id == id,
+        models.PagamentoFatura.usuario_id == usuario.id,
         models.PagamentoFatura.mes == req.mes,
         models.PagamentoFatura.ano == req.ano
     ).first()
@@ -175,10 +215,12 @@ def pagar_fatura(id: int, req: PagarFaturaRequest, db: Session = Depends(get_db)
         existente.valor = req.valor
         existente.data = req.data
         existente.conta_id = req.conta_id
+        bump_user_sync_rev(db, usuario.id)
         db.commit()
         return {"ok": True, "mensagem": f"Pagamento da fatura {req.mes:02d}/{req.ano} atualizado com sucesso."}
 
     pag = models.PagamentoFatura(
+        usuario_id=usuario.id,
         cartao_id=id,
         mes=req.mes,
         ano=req.ano,
@@ -187,5 +229,6 @@ def pagar_fatura(id: int, req: PagarFaturaRequest, db: Session = Depends(get_db)
         conta_id=req.conta_id
     )
     db.add(pag)
+    bump_user_sync_rev(db, usuario.id)
     db.commit()
     return {"ok": True, "mensagem": f"Pagamento da fatura {req.mes:02d}/{req.ano} registrado."}

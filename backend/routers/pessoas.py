@@ -1,10 +1,12 @@
 import os
+import secrets
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from database import get_db, DATA_DIR
 import models
 import auth
+from tenancy import bump_user_sync_rev
 from services.calculos import calcular_saldo_pessoa_mes
 from services.pdf_generator import gerar_pdf_fechamento
 from pydantic import BaseModel, Field
@@ -39,7 +41,20 @@ class PagamentoPessoaRequest(BaseModel):
 @router.get("/")
 def listar_pessoas(db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
     hoje = date.today()
-    pessoas = db.query(models.Pessoa).filter(models.Pessoa.ativa == True).all()
+    pessoas = (
+        db.query(models.Pessoa)
+        .filter(models.Pessoa.usuario_id == usuario.id, models.Pessoa.ativa == True)
+        .all()
+    )
+    gerou_token = False
+    for p in pessoas:
+        if not p.token_acesso:
+            p.token_acesso = secrets.token_urlsafe(12)
+            gerou_token = True
+    if gerou_token:
+        bump_user_sync_rev(db, usuario.id)
+        db.commit()
+
     resultado = []
     for p in pessoas:
         saldo = calcular_saldo_pessoa_mes(db, p.id, hoje.month, hoje.year)
@@ -59,15 +74,24 @@ def listar_pessoas(db: Session = Depends(get_db), usuario = Depends(auth.get_usu
 
 @router.post("/")
 def criar_pessoa(data: PessoaCreate, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
-    pessoa = models.Pessoa(**data.model_dump())
+    pessoa = models.Pessoa(
+        **data.model_dump(),
+        usuario_id=usuario.id,
+        token_acesso=secrets.token_urlsafe(12),
+    )
     db.add(pessoa)
+    bump_user_sync_rev(db, usuario.id)
     db.commit()
     db.refresh(pessoa)
     return pessoa
 
 @router.post("/{id}/foto")
 def upload_foto(id: int, file: UploadFile = File(...), db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
-    pessoa = db.query(models.Pessoa).filter(models.Pessoa.id == id).first()
+    pessoa = (
+        db.query(models.Pessoa)
+        .filter(models.Pessoa.id == id, models.Pessoa.usuario_id == usuario.id)
+        .first()
+    )
     if not pessoa:
         raise HTTPException(status_code=404, detail="Pessoa não encontrada.")
 
@@ -81,13 +105,14 @@ def upload_foto(id: int, file: UploadFile = File(...), db: Session = Depends(get
 
     old_foto = pessoa.foto_path
     timestamp = int(datetime.now().timestamp())
-    filename = f"pessoa_{id}_{timestamp}{ext}"
+    filename = f"pessoa_{id}_{timestamp}_{secrets.token_hex(4)}{ext}"
     filepath = os.path.join(uploads_dir, filename)
 
     with open(filepath, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
     pessoa.foto_path = f"/uploads/{filename}"
+    bump_user_sync_rev(db, usuario.id)
     db.commit()
     db.refresh(pessoa)
 
@@ -104,28 +129,42 @@ def upload_foto(id: int, file: UploadFile = File(...), db: Session = Depends(get
 
 @router.put("/{id}")
 def atualizar_pessoa(id: int, data: PessoaUpdate, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
-    pessoa = db.query(models.Pessoa).filter(models.Pessoa.id == id).first()
+    pessoa = (
+        db.query(models.Pessoa)
+        .filter(models.Pessoa.id == id, models.Pessoa.usuario_id == usuario.id)
+        .first()
+    )
     if not pessoa:
         raise HTTPException(status_code=404, detail="Pessoa não encontrada.")
     for k, v in data.model_dump(exclude_none=True).items():
         setattr(pessoa, k, v)
+    bump_user_sync_rev(db, usuario.id)
     db.commit()
     db.refresh(pessoa)
     return pessoa
 
 @router.delete("/{id}")
 def desativar_pessoa(id: int, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
-    pessoa = db.query(models.Pessoa).filter(models.Pessoa.id == id).first()
+    pessoa = (
+        db.query(models.Pessoa)
+        .filter(models.Pessoa.id == id, models.Pessoa.usuario_id == usuario.id)
+        .first()
+    )
     if not pessoa:
         raise HTTPException(status_code=404, detail="Pessoa não encontrada.")
     pessoa.ativa = False
+    bump_user_sync_rev(db, usuario.id)
     db.commit()
     return {"ok": True, "mensagem": "Pessoa desativada."}
 
 @router.get("/{id}/extrato")
 def extrato_pessoa(id: int, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
     hoje = date.today()
-    pessoa = db.query(models.Pessoa).filter(models.Pessoa.id == id).first()
+    pessoa = (
+        db.query(models.Pessoa)
+        .filter(models.Pessoa.id == id, models.Pessoa.usuario_id == usuario.id)
+        .first()
+    )
     if not pessoa:
         raise HTTPException(status_code=404, detail="Pessoa não encontrada.")
 
@@ -133,6 +172,7 @@ def extrato_pessoa(id: int, db: Session = Depends(get_db), usuario = Depends(aut
     meses_com_dados = set()
     lancamentos_todos = db.query(models.Lancamento).filter(
         models.Lancamento.pessoa_id == id,
+        models.Lancamento.usuario_id == usuario.id,
         models.Lancamento.cancelado == False
     ).all()
 
@@ -141,7 +181,8 @@ def extrato_pessoa(id: int, db: Session = Depends(get_db), usuario = Depends(aut
             meses_com_dados.add((p.ano, p.mes))
 
     pagamentos_todos = db.query(models.PagamentoPessoa).filter(
-        models.PagamentoPessoa.pessoa_id == id
+        models.PagamentoPessoa.pessoa_id == id,
+        models.PagamentoPessoa.usuario_id == usuario.id,
     ).all()
     for pag in pagamentos_todos:
         meses_com_dados.add((pag.data.year, pag.data.month))
@@ -220,7 +261,11 @@ def extrato_pessoa(id: int, db: Session = Depends(get_db), usuario = Depends(aut
 
 @router.post("/{id}/pagamento")
 def registrar_pagamento(id: int, req: PagamentoPessoaRequest, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
-    pessoa = db.query(models.Pessoa).filter(models.Pessoa.id == id).first()
+    pessoa = (
+        db.query(models.Pessoa)
+        .filter(models.Pessoa.id == id, models.Pessoa.usuario_id == usuario.id)
+        .first()
+    )
     if not pessoa:
         raise HTTPException(status_code=404, detail="Pessoa não encontrada.")
 
@@ -234,10 +279,17 @@ def registrar_pagamento(id: int, req: PagamentoPessoaRequest, db: Session = Depe
         if not forma_pagamento:
             raise HTTPException(400, "Informe a outra forma de pagamento.")
     conta_id = None if req.forma in {"dinheiro", "abatimento"} else req.conta_id
-    if conta_id is not None and db.get(models.ContaBancaria, conta_id) is None:
-        raise HTTPException(400, "A conta de destino não existe.")
+    if conta_id is not None:
+        conta_dest = (
+            db.query(models.ContaBancaria)
+            .filter(models.ContaBancaria.id == conta_id, models.ContaBancaria.usuario_id == usuario.id)
+            .first()
+        )
+        if conta_dest is None:
+            raise HTTPException(400, "A conta de destino não existe.")
 
     pag = models.PagamentoPessoa(
+        usuario_id=usuario.id,
         pessoa_id=id,
         valor=req.valor,
         data=req.data,
@@ -246,6 +298,7 @@ def registrar_pagamento(id: int, req: PagamentoPessoaRequest, db: Session = Depe
         conta_id=conta_id
     )
     db.add(pag)
+    bump_user_sync_rev(db, usuario.id)
     db.commit()
     db.refresh(pag)
     return {"ok": True, "mensagem": f"Pagamento de R$ {req.valor:.2f} registrado com sucesso.", "id": pag.id}
@@ -254,16 +307,25 @@ def registrar_pagamento(id: int, req: PagamentoPessoaRequest, db: Session = Depe
 def deletar_pagamento(id: int, pag_id: int, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
     pag = db.query(models.PagamentoPessoa).filter(
         models.PagamentoPessoa.id == pag_id,
-        models.PagamentoPessoa.pessoa_id == id
+        models.PagamentoPessoa.pessoa_id == id,
+        models.PagamentoPessoa.usuario_id == usuario.id,
     ).first()
     if not pag:
         raise HTTPException(status_code=404, detail="Registro de pagamento não encontrado.")
     db.delete(pag)
+    bump_user_sync_rev(db, usuario.id)
     db.commit()
     return {"ok": True, "mensagem": "Pagamento cancelado/excluído."}
 
 @router.get("/{id}/pdf/{mes}/{ano}")
 def baixar_pdf_fechamento(id: int, mes: int, ano: int, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
+    pessoa = (
+        db.query(models.Pessoa)
+        .filter(models.Pessoa.id == id, models.Pessoa.usuario_id == usuario.id)
+        .first()
+    )
+    if not pessoa:
+        raise HTTPException(status_code=404, detail="Pessoa não encontrada.")
     try:
         caminho_pdf = gerar_pdf_fechamento(db, id, mes, ano, usuario.nome)
         if not os.path.exists(caminho_pdf):
@@ -273,15 +335,23 @@ def baixar_pdf_fechamento(id: int, mes: int, ano: int, db: Session = Depends(get
             media_type="application/pdf",
             filename=os.path.basename(caminho_pdf)
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao gerar PDF: {str(e)}")
 
 @router.get("/{id}/pdf-path/{mes}/{ano}")
 def obter_caminho_pdf(id: int, mes: int, ano: int, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
     """Retorna o caminho absoluto do PDF para o serviço WhatsApp enviar."""
+    pessoa = (
+        db.query(models.Pessoa)
+        .filter(models.Pessoa.id == id, models.Pessoa.usuario_id == usuario.id)
+        .first()
+    )
+    if not pessoa:
+        raise HTTPException(status_code=404, detail="Pessoa não encontrada.")
     try:
         caminho_pdf = gerar_pdf_fechamento(db, id, mes, ano, usuario.nome)
-        pessoa = db.query(models.Pessoa).filter(models.Pessoa.id == id).first()
         return {
             "success": True,
             "pdf_path": caminho_pdf,
@@ -289,5 +359,7 @@ def obter_caminho_pdf(id: int, mes: int, ano: int, db: Session = Depends(get_db)
             "pessoa_nome": pessoa.nome if pessoa else "",
             "telefone": pessoa.telefone if pessoa else ""
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -396,11 +396,11 @@ function NuvemGoogleDrive() {
       {status.connected ? (
         <div className="mt-4 space-y-3">
           <div className="rounded-xl border p-3 text-sm space-y-1" style={{ borderColor: 'var(--line)', background: 'var(--raised)' }}>
-            {status.account && <p><strong>Conta Google:</strong> {status.account}</p>}
-            <p><strong>Pasta privada:</strong> {status.folder_name}</p>
+            {status.account && <p><strong>{status.vault_connected ? 'Cofre em Nuvem:' : 'Conta Google:'}</strong> {status.account}</p>}
+            {!status.vault_connected && <p><strong>Pasta privada:</strong> {status.folder_name}</p>}
             <p><strong>Último salvamento:</strong> {formatCloudTimestamp(status.last_sync_at)} {status.revision ? `(rev. #${status.revision})` : ''}</p>
             <p><strong>Arquivos protegidos:</strong> Banco SQLite íntegro + {status.uploads_synced_count || 0} foto(s)/comprovante(s)</p>
-            {status.folder_url && (
+            {status.folder_url && !status.vault_connected && (
               <p className="pt-1">
                 <a href={status.folder_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 font-semibold text-blue-600 hover:underline">
                   Abrir pasta no Google Drive <ExternalLink size={14} />
@@ -409,7 +409,7 @@ function NuvemGoogleDrive() {
             )}
           </div>
 
-          {status.is_cloud_container && !status.env_var_configured && (
+          {status.is_cloud_container && !status.env_var_configured && !status.vault_connected && (
             <div className="rounded-xl border border-amber-300 bg-amber-50/80 text-amber-900 p-3 text-xs space-y-1">
               <p className="font-bold">Dica importante para o Render nunca esquecer a conexão:</p>
               <p>Clique em <strong>Copiar Código Render</strong> abaixo e cole na variável <code>GOOGLE_DRIVE_OAUTH_JSON</code> em <em>Environment</em> no painel do Render.</p>
@@ -418,24 +418,37 @@ function NuvemGoogleDrive() {
 
           <div className="flex flex-wrap gap-2 pt-1">
             <button type="button" className="btn-primary" disabled={busy || status.syncing} onClick={salvarAgora}>
-              <RefreshCw size={16} /> Salvar no Drive agora
+              <RefreshCw size={16} /> {status.vault_connected ? 'Sincronizar Nuvem agora' : 'Salvar no Drive agora'}
             </button>
             <button type="button" className="btn-secondary" disabled={busy || status.restoring} onClick={restaurarAgora}>
-              <Cloud size={16} /> Restaurar do Drive
+              <Cloud size={16} /> {status.vault_connected ? 'Restaurar da Nuvem' : 'Restaurar do Drive'}
             </button>
-            <button type="button" className="btn-secondary" disabled={busy} onClick={copiarCodigoNuvem}>
-              <Copy size={16} /> Copiar Código Render
-            </button>
+            {!status.vault_connected && (
+              <button type="button" className="btn-secondary" disabled={busy} onClick={copiarCodigoNuvem}>
+                <Copy size={16} /> Copiar Código Render
+              </button>
+            )}
             <button type="button" className="btn-secondary" disabled={busy} onClick={baixarZip}>
               <Download size={16} /> Baixar Backup (.zip)
             </button>
-            <button type="button" className="btn-secondary text-red-600" disabled={busy} onClick={desconectarDrive}>
-              Desconectar
-            </button>
+            {!status.vault_connected && (
+              <button type="button" className="btn-secondary text-red-600" disabled={busy} onClick={desconectarDrive}>
+                Desconectar
+              </button>
+            )}
           </div>
         </div>
       ) : (
         <div className="mt-4 space-y-4">
+          {isLocalHost && (
+            <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs space-y-1">
+              <p className="font-bold text-emerald-400">✅ Sincronização Automática PC ↔ Celular já está ativa!</p>
+              <p style={{ color: 'var(--ink)' }}>
+                Seu perfil, cartões, pessoas e aprovações sincronizam automaticamente com a nuvem 24/7 usando apenas seu <strong>usuário e senha</strong>. O Google Drive abaixo é apenas opcional para cópia extra.
+              </p>
+            </div>
+          )}
+
           <p className="text-sm" style={{ color: 'var(--muted)' }}>
             Conecte seu Google Drive uma única vez: toda compra, pagamento ou comprovante será salvo automaticamente na sua conta Google e restaurado sozinho se o servidor reiniciar.
           </p>

@@ -4,10 +4,12 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from PIL import Image, ImageOps, UnidentifiedImageError
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 from database import get_db, DATA_DIR
 import models
 import auth
+from tenancy import USER_OWNED_TABLES, bump_user_sync_rev
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -63,11 +65,20 @@ def setup_inicial(req: SetupRequest, db: Session = Depends(get_db)):
     usuario = models.Usuario(
         nome=req.nome,
         email=usuario_id,
-        senha_hash=auth.hash_senha(req.senha)
+        senha_hash=auth.hash_senha(req.senha),
+        sync_rev=1,
     )
     db.add(usuario)
     db.commit()
     db.refresh(usuario)
+
+    # Atribui quaisquer registros legados sem dono ao usuário inicial
+    for tbl in USER_OWNED_TABLES:
+        db.execute(
+            text(f"UPDATE {tbl} SET usuario_id = :uid WHERE usuario_id IS NULL"),
+            {"uid": usuario.id},
+        )
+    db.commit()
 
     token = auth.criar_token(usuario)
     return {
@@ -91,7 +102,8 @@ def registrar_novo_usuario(req: RegisterRequest, db: Session = Depends(get_db)):
     usuario = models.Usuario(
         nome=req.nome.strip(),
         email=usuario_id,
-        senha_hash=auth.hash_senha(req.senha)
+        senha_hash=auth.hash_senha(req.senha),
+        sync_rev=1,
     )
     db.add(usuario)
     db.commit()
@@ -138,7 +150,12 @@ def trocar_senha(
     novo_hash = auth.hash_senha(req.nova_senha)
     alterados = db.query(models.Usuario).filter(
         models.Usuario.id == usuario.id, models.Usuario.senha_hash == hash_atual
-    ).update({models.Usuario.senha_hash: novo_hash})
+    ).update(
+        {
+            models.Usuario.senha_hash: novo_hash,
+            models.Usuario.sync_rev: func.coalesce(models.Usuario.sync_rev, 1) + 1,
+        }
+    )
     if not alterados:
         raise HTTPException(status_code=409, detail="A senha já foi alterada. Entre novamente.")
     db.commit()
@@ -155,7 +172,9 @@ def atualizar_perfil(req: PerfilRequest, usuario: models.Usuario = Depends(auth.
     if not 1 <= len(nome) <= 100:
         raise HTTPException(400, "Informe um nome de 1 a 100 caracteres.")
     usuario.nome = nome
+    bump_user_sync_rev(db, usuario.id)
     db.commit()
+    db.refresh(usuario)
     return dados_perfil(usuario)
 
 def _remove_old_upload_safe(rel_path: str | None) -> None:
@@ -190,7 +209,9 @@ def atualizar_foto(file: UploadFile = File(...), usuario: models.Usuario = Depen
     nome_arquivo = f"perfil_{usuario.id}_{uuid4().hex}.jpg"
     foto.save(UPLOADS_DIR / nome_arquivo, "JPEG", quality=88)
     usuario.logo_path = f"/uploads/{nome_arquivo}"
+    bump_user_sync_rev(db, usuario.id)
     db.commit()
+    db.refresh(usuario)
     _remove_old_upload_safe(old_logo)
     return dados_perfil(usuario)
 
@@ -198,6 +219,8 @@ def atualizar_foto(file: UploadFile = File(...), usuario: models.Usuario = Depen
 def remover_foto(usuario: models.Usuario = Depends(auth.get_usuario_atual), db: Session = Depends(get_db)):
     old_logo = usuario.logo_path
     usuario.logo_path = None
+    bump_user_sync_rev(db, usuario.id)
     db.commit()
+    db.refresh(usuario)
     _remove_old_upload_safe(old_logo)
     return dados_perfil(usuario)

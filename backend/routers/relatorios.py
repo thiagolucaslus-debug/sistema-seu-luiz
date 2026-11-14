@@ -18,11 +18,12 @@ def dashboard(mes: Optional[int] = None, ano: Optional[int] = None, db: Session 
     nomes_meses = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez']
 
     # 1. Total por Cartão no Mês
-    cartoes = db.query(models.Cartao).all()
+    cartoes = db.query(models.Cartao).filter(models.Cartao.usuario_id == usuario.id).all()
     dados_cartoes = []
     total_cartoes = 0.0
     for c in cartoes:
         parcelas = db.query(models.Parcela).join(models.Lancamento).filter(
+            models.Lancamento.usuario_id == usuario.id,
             models.Lancamento.cartao_id == c.id,
             models.Parcela.mes == mes,
             models.Parcela.ano == ano,
@@ -41,7 +42,11 @@ def dashboard(mes: Optional[int] = None, ano: Optional[int] = None, db: Session 
         })
 
     # 2. Total por Pessoa no Mês e Saldos Devedores
-    pessoas = db.query(models.Pessoa).filter(models.Pessoa.ativa == True).all()
+    pessoas = (
+        db.query(models.Pessoa)
+        .filter(models.Pessoa.usuario_id == usuario.id, models.Pessoa.ativa == True)
+        .all()
+    )
     dados_pessoas = []
     total_a_receber = 0.0
     for p in pessoas:
@@ -74,10 +79,11 @@ def dashboard(mes: Optional[int] = None, ano: Optional[int] = None, db: Session 
     )
 
     # 3. Total por Módulo no Mês
-    modulos = db.query(models.Modulo).all()
+    modulos = db.query(models.Modulo).filter(models.Modulo.usuario_id == usuario.id).all()
     dados_modulos = []
     for m in modulos:
         parcelas = db.query(models.Parcela).join(models.Lancamento).filter(
+            models.Lancamento.usuario_id == usuario.id,
             models.Lancamento.modulo_id == m.id,
             models.Parcela.mes == mes,
             models.Parcela.ano == ano,
@@ -93,7 +99,11 @@ def dashboard(mes: Optional[int] = None, ano: Optional[int] = None, db: Session 
             })
 
     # 4. Saldo em Contas Bancárias
-    contas = db.query(models.ContaBancaria).filter(models.ContaBancaria.ativa == True).all()
+    contas = (
+        db.query(models.ContaBancaria)
+        .filter(models.ContaBancaria.usuario_id == usuario.id, models.ContaBancaria.ativa == True)
+        .all()
+    )
     dados_contas = []
     saldo_total_contas = 0.0
     for c in contas:
@@ -116,6 +126,7 @@ def dashboard(mes: Optional[int] = None, ano: Optional[int] = None, db: Session 
             a -= 1
 
         parcelas_m = db.query(models.Parcela).join(models.Lancamento).filter(
+            models.Lancamento.usuario_id == usuario.id,
             models.Parcela.mes == m,
             models.Parcela.ano == a,
             models.Lancamento.cancelado == False
@@ -139,6 +150,7 @@ def dashboard(mes: Optional[int] = None, ano: Optional[int] = None, db: Session 
             a += 1
 
         parcelas_fut = db.query(models.Parcela).join(models.Lancamento).filter(
+            models.Lancamento.usuario_id == usuario.id,
             models.Parcela.mes == m,
             models.Parcela.ano == a,
             models.Parcela.status == "pendente",
@@ -183,11 +195,16 @@ def fechamento_consolidado_mes(
     ano = ano or hoje.year
 
     # 1. Cartões no Mês
-    cartoes = db.query(models.Cartao).filter(models.Cartao.ativo == True).all()
+    cartoes = (
+        db.query(models.Cartao)
+        .filter(models.Cartao.usuario_id == usuario.id, models.Cartao.ativo == True)
+        .all()
+    )
     dados_cartoes = []
     total_faturas = 0.0
     for c in cartoes:
         parcelas = db.query(models.Parcela).join(models.Lancamento).filter(
+            models.Lancamento.usuario_id == usuario.id,
             models.Lancamento.cartao_id == c.id,
             models.Parcela.mes == mes,
             models.Parcela.ano == ano,
@@ -221,7 +238,11 @@ def fechamento_consolidado_mes(
         })
 
     # 2. Pessoas no Mês
-    pessoas = db.query(models.Pessoa).filter(models.Pessoa.ativa == True).all()
+    pessoas = (
+        db.query(models.Pessoa)
+        .filter(models.Pessoa.usuario_id == usuario.id, models.Pessoa.ativa == True)
+        .all()
+    )
     dados_pessoas = []
     total_a_receber = 0.0
     total_a_pagar = 0.0
@@ -230,6 +251,7 @@ def fechamento_consolidado_mes(
         compras_pessoa = []
         parcelas_futuras_pessoa = []
         lancamentos_p = db.query(models.Lancamento).filter(
+            models.Lancamento.usuario_id == usuario.id,
             models.Lancamento.pessoa_id == p.id,
             models.Lancamento.cancelado == False
         ).all()
@@ -278,7 +300,11 @@ def fechamento_consolidado_mes(
         total_a_pagar += saldo["credito_a_favor"]
 
     # 3. Contas Bancárias no Mês
-    contas = db.query(models.ContaBancaria).filter(models.ContaBancaria.ativa == True).all()
+    contas = (
+        db.query(models.ContaBancaria)
+        .filter(models.ContaBancaria.usuario_id == usuario.id, models.ContaBancaria.ativa == True)
+        .all()
+    )
     dados_contas = []
     for c in contas:
         dados_contas.append({
@@ -315,6 +341,7 @@ def parcelas_futuras(meses: int = 12, db: Session = Depends(get_db), usuario = D
             a += 1
 
         parcelas = db.query(models.Parcela).join(models.Lancamento).filter(
+            models.Lancamento.usuario_id == usuario.id,
             models.Parcela.mes == m,
             models.Parcela.ano == a,
             models.Parcela.status == "pendente",
