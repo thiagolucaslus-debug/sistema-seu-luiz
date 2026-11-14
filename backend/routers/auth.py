@@ -158,6 +158,20 @@ def atualizar_perfil(req: PerfilRequest, usuario: models.Usuario = Depends(auth.
     db.commit()
     return dados_perfil(usuario)
 
+def _remove_old_upload_safe(rel_path: str | None) -> None:
+    if not rel_path or not rel_path.startswith("/uploads/"):
+        return
+    fname = Path(rel_path.removeprefix("/uploads/")).name
+    if not fname or fname in {".", ".."}:
+        return
+    old_file = UPLOADS_DIR / fname
+    if old_file.is_file():
+        try:
+            old_file.unlink()
+        except OSError:
+            pass
+
+
 @router.post("/perfil/foto")
 def atualizar_foto(file: UploadFile = File(...), usuario: models.Usuario = Depends(auth.get_usuario_atual), db: Session = Depends(get_db)):
     data = file.file.read(5 * 1024 * 1024 + 1)
@@ -172,14 +186,18 @@ def atualizar_foto(file: UploadFile = File(...), usuario: models.Usuario = Depen
     except (OSError, UnidentifiedImageError, ValueError, Image.DecompressionBombError) as erro:
         raise HTTPException(400, "Escolha uma imagem JPG, PNG ou WebP válida.") from erro
     UPLOADS_DIR.mkdir(exist_ok=True)
+    old_logo = usuario.logo_path
     nome_arquivo = f"perfil_{usuario.id}_{uuid4().hex}.jpg"
     foto.save(UPLOADS_DIR / nome_arquivo, "JPEG", quality=88)
     usuario.logo_path = f"/uploads/{nome_arquivo}"
     db.commit()
+    _remove_old_upload_safe(old_logo)
     return dados_perfil(usuario)
 
 @router.delete("/perfil/foto")
 def remover_foto(usuario: models.Usuario = Depends(auth.get_usuario_atual), db: Session = Depends(get_db)):
+    old_logo = usuario.logo_path
     usuario.logo_path = None
     db.commit()
+    _remove_old_upload_safe(old_logo)
     return dados_perfil(usuario)

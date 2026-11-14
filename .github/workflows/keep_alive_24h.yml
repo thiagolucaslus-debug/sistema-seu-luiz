@@ -2,6 +2,9 @@ name: Anti-Sono 24-7 & Monitoramento Nuvem (Render + Google Drive)
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
   schedule:
     # Mantem https://sistema-seu-luiz.onrender.com acordado 24/7 (a cada 10 min)
     # Render Free inclui 750h/mes gratuitas (1 mes de 31 dias = 744h -> custo R$ 0,00)
@@ -84,7 +87,9 @@ jobs:
                       jwt_tok = json.loads(lr.read().decode("utf-8"))["access_token"]
                   tok_req = urllib.request.Request(
                       f"{base_url}/cloud/token",
-                      data=json.dumps({"token": gd_token, "restore_first": True}).encode("utf-8"),
+                      data=json.dumps(
+                          {"token": gd_token, "restore_first": True, "sync_immediately": True}
+                      ).encode("utf-8"),
                       headers={
                           "Content-Type": "application/json",
                           "Authorization": f"Bearer {jwt_tok}",

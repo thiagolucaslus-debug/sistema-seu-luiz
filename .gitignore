@@ -25,6 +25,7 @@ frontend/dist/
 dist/
 build/
 *.spec
+!AdministracaoFinanceira.spec
 
 # PDFs & Database temporary files
 backend/pdfs/*.pdf

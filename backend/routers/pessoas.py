@@ -79,6 +79,7 @@ def upload_foto(id: int, file: UploadFile = File(...), db: Session = Depends(get
     uploads_dir = os.path.join(DATA_DIR, "uploads")
     os.makedirs(uploads_dir, exist_ok=True)
 
+    old_foto = pessoa.foto_path
     timestamp = int(datetime.now().timestamp())
     filename = f"pessoa_{id}_{timestamp}{ext}"
     filepath = os.path.join(uploads_dir, filename)
@@ -89,6 +90,15 @@ def upload_foto(id: int, file: UploadFile = File(...), db: Session = Depends(get
     pessoa.foto_path = f"/uploads/{filename}"
     db.commit()
     db.refresh(pessoa)
+
+    if old_foto and old_foto.startswith("/uploads/") and old_foto != pessoa.foto_path:
+        old_name = os.path.basename(old_foto.removeprefix("/uploads/"))
+        old_fp = os.path.join(uploads_dir, old_name)
+        if old_name and os.path.isfile(old_fp):
+            try:
+                os.remove(old_fp)
+            except OSError:
+                pass
 
     return {"ok": True, "foto_path": pessoa.foto_path}
 

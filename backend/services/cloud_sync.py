@@ -58,9 +58,11 @@ TRACKED_TABLES = (
     "cartoes",
     "pessoas",
     "modulos",
+    "subcategorias",
     "lancamentos",
     "parcelas",
     "pagamentos_pessoa",
+    "pagamentos_fatura",
     "solicitacoes_lancamento",
 )
 
@@ -365,6 +367,7 @@ class CloudSyncManager:
         self._last_dirty_at = 0.0
         self._syncing = False
         self._restoring = False
+        self._boot_restore_failed = False
         self._shutdown = False
         self._last_error: str | None = None
         self._last_reason: str = ""
@@ -617,9 +620,20 @@ class CloudSyncManager:
                 self.credentials["account"] = account_email
                 self._save_credentials()
 
-        # Dispara sincronização inicial em background
-        self.notify_change("oauth_connected")
+        # Sincronização inicial inteligente em background (restaura se o Drive já tiver backup mais completo, ou semeia)
+        threading.Thread(
+            target=self._safe_initial_connect_worker,
+            name="seu-luiz-oauth-init",
+            daemon=True,
+        ).start()
         return self.status()
+
+    def _safe_initial_connect_worker(self) -> None:
+        try:
+            self.smart_initial_sync(prefer_restore=True, reason="oauth_connected")
+        except Exception as exc:
+            with self._state_lock:
+                self._last_error = str(exc)
 
     def import_oauth_token(
         self,
@@ -634,6 +648,7 @@ class CloudSyncManager:
             parsed["auto_sync_enabled"] = bool(old_creds.get("auto_sync_enabled", True))
             parsed["connection_version"] = secrets.token_hex(10)
             self.credentials = parsed
+            self._boot_restore_failed = False
 
         # Valida imediatamente contra o Google Drive antes de confirmar
         try:
@@ -650,8 +665,10 @@ class CloudSyncManager:
 
         action_result: dict[str, Any] = {}
         if restore_first:
-            action_result = self.restore_from_drive(force=False, on_boot=True)
-        if sync_immediately and not action_result.get("restored"):
+            action_result = self.restore_from_drive(force=True, on_boot=False)
+            if sync_immediately and not action_result.get("remote_backup_found"):
+                action_result = self.sync_now(force=True, reason="token_import")
+        elif sync_immediately:
             action_result = self.sync_now(force=True, reason="token_import")
 
         st = self.status()
@@ -963,6 +980,87 @@ class CloudSyncManager:
         )
         return body
 
+    def _trash_remote_file(self, file_id: str) -> None:
+        try:
+            self._drive_request(
+                "PATCH",
+                f"https://www.googleapis.com/drive/v3/files/{file_id}",
+                json_body={"trashed": True},
+                timeout=20.0,
+            )
+        except Exception:
+            pass
+
+    def _save_local_safety_snapshot(self, tag: str = "antes_restauracao") -> None:
+        if not self.db_path.is_file():
+            return
+        try:
+            bak_dir = self.config_dir / "backups_locais"
+            bak_dir.mkdir(parents=True, exist_ok=True)
+            create_sqlite_snapshot(self.db_path, bak_dir / f"financeiro_{tag}.db")
+        except Exception:
+            pass
+
+    def smart_initial_sync(
+        self,
+        *,
+        prefer_restore: bool = True,
+        reason: str = "initial_connect",
+    ) -> dict[str, Any]:
+        """
+        Sincronização inicial inteligente ao vincular uma conta Google:
+        - Se não houver backup no Google Drive ainda, envia o banco + uploads locais.
+        - Se já houver backup no Google Drive e ele tiver mais registros (ou estivermos em container nuvem / banco vazio),
+          restaura automaticamente do Google Drive (salvando cópia local de segurança antes).
+        - Caso o banco local tenha mais registros que o do Drive, envia o local preservando o anterior em `historico_seguranca/`.
+        """
+        if not self.is_connected():
+            return {"ok": False, "skipped": True, "reason": "not_connected"}
+
+        folder_name = str(self.credentials.get("root_folder_name") or DEFAULT_FOLDER_NAME)
+        root_folder = self._find_folder(folder_name)
+        if not root_folder:
+            return self.sync_now(force=True, reason=reason)
+
+        root_files = self._list_files_in_folder(root_folder["id"])
+        remote_db_entry = root_files.get("financeiro.db")
+        if not remote_db_entry:
+            return self.sync_now(force=True, reason=reason)
+
+        remote_manifest: dict[str, Any] = {}
+        if "manifest.json" in root_files:
+            try:
+                raw_mf = self._download_file_bytes(root_files["manifest.json"]["id"])
+                remote_manifest = json.loads(raw_mf.decode("utf-8"))
+            except Exception:
+                remote_manifest = {}
+
+        if not self.db_path.is_file():
+            return self.restore_from_drive(force=True, on_boot=False)
+
+        tmp_dir = Path(tempfile.mkdtemp(prefix="seu_luiz_init_"))
+        try:
+            snap_info = create_sqlite_snapshot(self.db_path, tmp_dir / "local.db")
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        local_users = int(snap_info["counts"].get("usuarios") or 0)
+        local_rows = sum(int(v or 0) for v in snap_info["counts"].values())
+        remote_counts = remote_manifest.get("counts") or {}
+        remote_rows = sum(int(v or 0) for v in remote_counts.values())
+        remote_sha = str(remote_manifest.get("db_sha256") or "")
+
+        if remote_sha and remote_sha == snap_info["sha256"]:
+            return self.restore_from_drive(force=False, on_boot=False)
+
+        if self.is_cloud_container or local_users == 0:
+            return self.restore_from_drive(force=True, on_boot=False)
+
+        if prefer_restore and (remote_rows >= local_rows or not remote_counts):
+            return self.restore_from_drive(force=True, on_boot=False)
+
+        return self.sync_now(force=True, reason=reason)
+
     # =========================================================================
     # Sincronização Incremental (Local -> Google Drive)
     # =========================================================================
@@ -985,6 +1083,18 @@ class CloudSyncManager:
             return {"ok": False, "skipped": True, "reason": "not_connected"}
         if not self.db_path.is_file():
             return {"ok": False, "skipped": True, "reason": "local_db_missing"}
+
+        # Se a restauração inicial no boot falhou por rede transitória, restaura primeiro antes de permitir auto-sync
+        if not force and self._boot_restore_failed:
+            retry_res = self.restore_from_drive(force=False, on_boot=True)
+            if not retry_res.get("ok"):
+                return {
+                    "ok": False,
+                    "blocked_boot_restore_pending": True,
+                    "detail": "Aguardando restauração inicial do Google Drive antes de sincronizar.",
+                }
+            if retry_res.get("restored"):
+                return {"ok": True, "action": "restored_after_boot_retry", **retry_res}
 
         with self._io_lock:
             with self._state_lock:
@@ -1018,24 +1128,55 @@ class CloudSyncManager:
                     except Exception:
                         remote_manifest = {}
 
-                # Proteção Anti-Wipe: jamais sobrescreve backup com usuários no Drive usando banco vazio (0 usuários)
+                # Proteção Anti-Wipe e Anti-Sobrescrita de Revisão Mais Nova:
                 remote_users = int(((remote_manifest.get("counts") or {}).get("usuarios")) or 0)
                 local_users = int(snap_info["counts"].get("usuarios") or 0)
+                local_rev = int(self.meta.get("revision") or 0)
+                remote_rev = int(remote_manifest.get("revision") or 0)
+                remote_sha = str(remote_manifest.get("db_sha256") or "")
+
                 if not force and remote_users > 0 and local_users == 0:
                     msg = (
                         "Proteção anti-perda ativada: o Google Drive possui dados salvos e o banco local está vazio. "
-                        "Use 'Restaurar da Nuvem' para recuperar os dados."
+                        "Use 'Restaurar do Drive' para recuperar os dados."
                     )
                     with self._state_lock:
                         self._last_error = msg
                     return {"ok": False, "blocked_anti_wipe": True, "detail": msg}
 
-                # Rotaciona cópia de segurança anterior (máx. 1x a cada 30 min) quando o banco muda
+                if not force and local_rev == 0 and remote_rev > 0 and remote_sha and remote_sha != snap_info["sha256"]:
+                    msg = (
+                        f"Proteção anti-perda ativada: o Google Drive já possui backup ativo (rev. #{remote_rev}). "
+                        "Clique em 'Restaurar do Drive' para baixar os dados da nuvem ou 'Salvar no Drive agora' para substituir."
+                    )
+                    with self._state_lock:
+                        self._last_error = msg
+                    return {"ok": False, "blocked_anti_wipe": True, "blocked_remote_newer": True, "detail": msg}
+
+                if (
+                    not force
+                    and local_rev > 0
+                    and remote_rev > local_rev
+                    and self.meta.get("db_sha256")
+                    and snap_info["sha256"] == self.meta.get("db_sha256")
+                    and uploads_local == (self.meta.get("uploads") or {})
+                ):
+                    return {"ok": True, "action": "remote_ahead_no_local_change", "revision": remote_rev}
+
+                # Rotaciona cópia de segurança anterior quando o banco muda (sempre em conflito de revisão, ou a cada 30 min)
                 remote_db_entry = root_files.get("financeiro.db")
-                db_changed = force or (remote_manifest.get("db_sha256") != snap_info["sha256"]) or not remote_db_entry
+                db_changed = force or (remote_sha != snap_info["sha256"]) or not remote_db_entry
                 if db_changed:
                     last_hist_ts = float(self.meta.get("last_history_snapshot_at") or 0)
-                    if remote_db_entry and local_users > 0 and (time.time() - last_hist_ts >= 1800):
+                    must_snapshot_conflict = bool(
+                        remote_db_entry
+                        and remote_sha
+                        and remote_sha != snap_info["sha256"]
+                        and (remote_rev > local_rev or local_rev == 0)
+                    )
+                    if remote_db_entry and (
+                        must_snapshot_conflict or (local_users > 0 and (time.time() - last_hist_ts >= 1800))
+                    ):
                         try:
                             hist_folder = self._ensure_folder("historico_seguranca", parent_id=root_id)
                             hist_files = self._list_files_in_folder(hist_folder["id"])
@@ -1059,31 +1200,46 @@ class CloudSyncManager:
                         existing_file_id=(remote_db_entry or {}).get("id"),
                     )
 
-                # Sincroniza incrementalmente apenas fotos/comprovantes novos ou alterados em uploads/
+                # Sincroniza incrementalmente fotos/comprovantes novos/alterados e remove do Drive os excluídos localmente
                 remote_uploads_manifest = remote_manifest.get("uploads") or {}
+                prev_local_uploads = self.meta.get("uploads") or {}
+                removed_upload_names = (
+                    set(remote_uploads_manifest.keys()) | set(prev_local_uploads.keys())
+                ) - set(uploads_local.keys())
+
                 uploaded_media_count = 0
-                if uploads_local:
-                    uploads_folder = self._ensure_folder("uploads", parent_id=root_id)
-                    remote_upload_files = self._list_files_in_folder(uploads_folder["id"])
-                    for fname, fmeta in uploads_local.items():
-                        prev_m = remote_uploads_manifest.get(fname) or {}
-                        rem_f = remote_upload_files.get(fname)
-                        if (
-                            not force
-                            and rem_f
-                            and prev_m.get("sha256") == fmeta["sha256"]
-                            and int(prev_m.get("size") or -1) == fmeta["size"]
-                        ):
-                            continue
-                        local_f = self.uploads_dir / fname
-                        if local_f.is_file():
-                            self._upload_file(
-                                local_f,
-                                fname,
-                                uploads_folder["id"],
-                                existing_file_id=(rem_f or {}).get("id"),
-                            )
-                            uploaded_media_count += 1
+                if uploads_local or removed_upload_names:
+                    uploads_folder = (
+                        self._ensure_folder("uploads", parent_id=root_id)
+                        if uploads_local
+                        else self._find_folder("uploads", parent_id=root_id)
+                    )
+                    if uploads_folder:
+                        remote_upload_files = self._list_files_in_folder(uploads_folder["id"])
+                        for fname, fmeta in uploads_local.items():
+                            prev_m = remote_uploads_manifest.get(fname) or {}
+                            rem_f = remote_upload_files.get(fname)
+                            if (
+                                not force
+                                and rem_f
+                                and prev_m.get("sha256") == fmeta["sha256"]
+                                and int(prev_m.get("size") or -1) == fmeta["size"]
+                            ):
+                                continue
+                            local_f = self.uploads_dir / fname
+                            if local_f.is_file():
+                                self._upload_file(
+                                    local_f,
+                                    fname,
+                                    uploads_folder["id"],
+                                    existing_file_id=(rem_f or {}).get("id"),
+                                )
+                                uploaded_media_count += 1
+
+                        for del_name in removed_upload_names:
+                            rem_del = remote_upload_files.get(del_name)
+                            if rem_del and rem_del.get("id"):
+                                self._trash_remote_file(rem_del["id"])
 
                 now_ts = time.time()
                 next_rev = max(int(self.meta.get("revision") or 0), int(remote_manifest.get("revision") or 0)) + 1
@@ -1165,19 +1321,31 @@ class CloudSyncManager:
                 folder_name = str(self.credentials.get("root_folder_name") or DEFAULT_FOLDER_NAME)
                 root_folder = self._find_folder(folder_name)
                 if not root_folder:
+                    self._boot_restore_failed = False
                     # Primeira execução absoluta: se o banco local já tiver dados, semeia o Google Drive
                     if on_boot and self.db_path.is_file():
                         self.notify_change("initial_seed_on_boot")
-                    return {"ok": True, "restored": False, "reason": "remote_folder_not_found"}
+                    return {
+                        "ok": True,
+                        "restored": False,
+                        "remote_backup_found": False,
+                        "reason": "remote_folder_not_found",
+                    }
 
                 root_id = root_folder["id"]
                 folder_url = root_folder.get("webViewLink") or f"https://drive.google.com/drive/folders/{root_id}"
                 root_files = self._list_files_in_folder(root_id)
                 remote_db_entry = root_files.get("financeiro.db")
                 if not remote_db_entry:
+                    self._boot_restore_failed = False
                     if on_boot and self.db_path.is_file():
                         self.notify_change("initial_seed_on_boot")
-                    return {"ok": True, "restored": False, "reason": "remote_db_not_found"}
+                    return {
+                        "ok": True,
+                        "restored": False,
+                        "remote_backup_found": False,
+                        "reason": "remote_db_not_found",
+                    }
 
                 remote_manifest: dict[str, Any] = {}
                 if "manifest.json" in root_files:
@@ -1200,13 +1368,34 @@ class CloudSyncManager:
                     except Exception:
                         local_users = 0
 
-                if not force and on_boot:
-                    # No desktop local (fora de container efêmero), preserva banco local se já possui usuários
-                    if not self.is_cloud_container and local_exists and local_users > 0:
-                        return {"ok": True, "restored": False, "reason": "desktop_local_preserved"}
+                remote_sha = str(remote_manifest.get("db_sha256") or "")
+                local_rev = int(self.meta.get("revision") or 0)
+                remote_rev = int(remote_manifest.get("revision") or 0)
+
+                if not force and on_boot and not self.is_cloud_container and local_exists and local_users > 0:
+                    # No desktop local: atualiza automaticamente se o Render enviou revisão mais nova e o PC não tem edições offline pendentes
+                    local_clean_since_sync = bool(
+                        local_rev > 0
+                        and self.meta.get("db_sha256")
+                        and local_sha256 == self.meta.get("db_sha256")
+                    )
+                    if not (local_clean_since_sync and remote_rev > local_rev):
+                        if remote_sha and remote_sha == local_sha256 and local_rev == 0 and remote_rev > 0:
+                            with self._state_lock:
+                                self.meta["revision"] = remote_rev
+                                self.meta["db_sha256"] = local_sha256
+                                self.meta["folder_id"] = root_id
+                                self.meta["folder_url"] = folder_url
+                                self._save_meta()
+                        self._boot_restore_failed = False
+                        return {
+                            "ok": True,
+                            "restored": False,
+                            "remote_backup_found": True,
+                            "reason": "desktop_local_preserved",
+                        }
 
                 # Se os bytes do banco já são idênticos ao manifesto remoto, apenas garante uploads ausentes
-                remote_sha = str(remote_manifest.get("db_sha256") or "")
                 db_restored = False
                 restored_counts: dict[str, int] = remote_manifest.get("counts") or {}
 
@@ -1215,6 +1404,9 @@ class CloudSyncManager:
                     dl_db.write_bytes(self._download_file_bytes(remote_db_entry["id"]))
                     restored_counts = validate_sqlite_file(dl_db)
                     remote_sha = _sha256_file(dl_db)
+
+                    if local_exists and local_sha256 and local_sha256 != remote_sha:
+                        self._save_local_safety_snapshot("antes_restauracao")
 
                     if self._engine_disposer:
                         try:
@@ -1246,14 +1438,19 @@ class CloudSyncManager:
 
                 # Restaura fotos de pessoas/perfil e comprovantes da subpasta uploads/
                 uploads_restored = 0
+                has_manifest_uploads = isinstance(remote_manifest.get("uploads"), dict)
+                remote_uploads_meta: dict[str, Any] = (
+                    remote_manifest["uploads"] if has_manifest_uploads else {}
+                )
                 uploads_folder = self._find_folder("uploads", parent_id=root_id)
                 if uploads_folder:
                     remote_upload_files = self._list_files_in_folder(uploads_folder["id"])
-                    remote_uploads_meta = remote_manifest.get("uploads") or {}
                     self.uploads_dir.mkdir(parents=True, exist_ok=True)
                     for raw_name, r_info in remote_upload_files.items():
                         safe_name = Path(raw_name).name
                         if not safe_name or safe_name in (".", "..") or safe_name != raw_name:
+                            continue
+                        if has_manifest_uploads and safe_name not in remote_uploads_meta:
                             continue
                         target_f = self.uploads_dir / safe_name
                         expected_sha = (remote_uploads_meta.get(safe_name) or {}).get("sha256")
@@ -1265,6 +1462,20 @@ class CloudSyncManager:
                         f_bytes = self._download_file_bytes(r_info["id"])
                         _atomic_write_bytes(target_f, f_bytes)
                         uploads_restored += 1
+
+                if has_manifest_uploads:
+                    candidates = (
+                        {p.name for p in self.uploads_dir.iterdir() if p.is_file() and not p.name.startswith(".")}
+                        if force and self.uploads_dir.is_dir()
+                        else set((self.meta.get("uploads") or {}).keys())
+                    )
+                    for stale_name in candidates - set(remote_uploads_meta.keys()):
+                        stale_f = self.uploads_dir / Path(stale_name).name
+                        if stale_f.is_file():
+                            try:
+                                stale_f.unlink()
+                            except OSError:
+                                pass
 
                 # Recalcula hash pós-migração para manter manifesto local sincronizado sem re-upload redundante
                 final_snap = tmp_dir / "post_restore_snap.db"
@@ -1284,12 +1495,14 @@ class CloudSyncManager:
                     if not self.meta.get("last_sync_at") and remote_manifest.get("updated_at"):
                         self.meta["last_sync_at"] = float(remote_manifest["updated_at"])
                     self._dirty = False
+                    self._boot_restore_failed = False
                     self._last_error = None
                     self._save_meta()
 
                 return {
                     "ok": True,
                     "restored": db_restored or (uploads_restored > 0),
+                    "remote_backup_found": True,
                     "db_restored": db_restored,
                     "uploads_restored": uploads_restored,
                     "counts": final_info["counts"],
@@ -1297,6 +1510,8 @@ class CloudSyncManager:
                 }
             except Exception as exc:
                 with self._state_lock:
+                    if on_boot:
+                        self._boot_restore_failed = True
                     self._last_error = f"Falha ao restaurar do Google Drive: {exc}"
                 if on_boot:
                     return {"ok": False, "restored": False, "error": str(exc)}

@@ -259,21 +259,32 @@ class FakeGoogleDriveServer:
                 )
             return 200, {"Content-Type": "application/json"}, json.dumps({"files": matched}).encode()
 
-        # 6. Download de arquivo (GET /drive/v3/files/{id}?alt=media)
-        if parsed.path.startswith("/drive/v3/files/") and method.upper() == "GET":
+        # 6. Download ou lixeira de arquivo (GET/PATCH /drive/v3/files/{id})
+        if parsed.path.startswith("/drive/v3/files/"):
             fid = parsed.path.rsplit("/", 1)[-1]
             item = self.files.get(fid)
             if not item:
                 return 404, {}, b'{"error":"notFound"}'
-            if self.corrupt_downloads and item["name"] == "financeiro.db":
-                return 200, {}, b"NOT_A_VALID_SQLITE_BINARY_PAYLOAD"
-            return 200, {"Content-Type": "application/octet-stream"}, item["content"]
+            if method.upper() == "PATCH":
+                patch_body = json.loads((data or b"{}").decode("utf-8"))
+                if "trashed" in patch_body:
+                    item["trashed"] = bool(patch_body["trashed"])
+                return 200, {"Content-Type": "application/json"}, json.dumps({"id": fid, "trashed": item["trashed"]}).encode()
+            if method.upper() == "GET":
+                if self.corrupt_downloads and item["name"] == "financeiro.db":
+                    return 200, {}, b"NOT_A_VALID_SQLITE_BINARY_PAYLOAD"
+                return 200, {"Content-Type": "application/octet-stream"}, item["content"]
 
         return 404, {}, f"Unhandled route: {method} {url}".encode()
 
 
-def _build_test_environment(tmp_path: Path, fake_drive: FakeGoogleDriveServer, is_cloud: bool = False):
-    data_dir = tmp_path / ("cloud_node" if is_cloud else "local_node")
+def _build_test_environment(
+    tmp_path: Path,
+    fake_drive: FakeGoogleDriveServer,
+    is_cloud: bool = False,
+    subdir: str | None = None,
+):
+    data_dir = tmp_path / (subdir or ("cloud_node" if is_cloud else "local_node"))
     cfg_dir = data_dir / "cfg"
     data_dir.mkdir(parents=True, exist_ok=True)
     db_path = data_dir / "financeiro.db"
@@ -348,6 +359,11 @@ class CloudSyncHardeningTests(unittest.TestCase):
                 cb = client1.get(f"/cloud/oauth/callback?state={state}&code=valid_oauth_code")
                 self.assertEqual(cb.status_code, 200)
                 self.assertIn("luiz.financeiro@gmail.com", cb.text)
+
+                # Espera sincronização automática inicial pós-OAuth terminar antes de manipular
+                deadline_init = time.time() + 3.0
+                while time.time() < deadline_init and mgr1.status()["revision"] < 1:
+                    time.sleep(0.05)
 
                 st = client1.get("/cloud/status", headers=headers1).json()
                 self.assertTrue(st["connected"])
@@ -509,24 +525,207 @@ class CloudSyncHardeningTests(unittest.TestCase):
             self.assertEqual(st["uploads_synced_count"], 1)
             self.assertFalse(st["pending_changes"])
 
-    def test_main_app_health_e_cli_status(self):
+    def test_protecao_contra_sobrescrita_desktop_multidispositivo_e_exclusao_uploads(self):
+        fake_drive = FakeGoogleDriveServer(email="multipc@gmail.com")
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+        compact, _ = encode_compact_oauth_token(
+            {
+                "client_id": "202264815644.apps.googleusercontent.com",
+                "refresh_token": "1//refresh_token_multipc",
+                "account": "multipc@gmail.com",
+            }
+        )
+
+        # 1. Nó Render em produção cria 1 usuário, 1 cartão, 3 compras e 2 comprovantes
+        app_cloud, eng_cloud, _, mgr_cloud, data_cloud, _ = _build_test_environment(
+            root, fake_drive, is_cloud=True, subdir="render_prod"
+        )
+        self.addCleanup(eng_cloud.dispose)
+        self.addCleanup(mgr_cloud.shutdown)
+
+        mgr_cloud.import_oauth_token(compact, restore_first=False, sync_immediately=False)
+        with TestClient(app_cloud) as c_cloud:
+            s_res = c_cloud.post(
+                "/auth/setup",
+                json={"nome": "Seu Luiz", "usuario": "luiz", "senha": "Senha123"},
+            )
+            hdr = {"Authorization": f"Bearer {s_res.json()['access_token']}"}
+            cartao = c_cloud.post(
+                "/cartoes/", headers=hdr, json={"nome": "Nubank", "bandeira": "Mastercard", "limite": 8000}
+            ).json()
+            for idx in range(3):
+                c_cloud.post(
+                    "/lancamentos/",
+                    headers=hdr,
+                    json={
+                        "descricao": f"Compra Nuvem {idx + 1}",
+                        "tipo": "compra_cartao",
+                        "valor_total": 100.0 * (idx + 1),
+                        "total_parcelas": 1,
+                        "data_lancamento": "2026-11-12",
+                        "cartao_id": cartao["id"],
+                    },
+                )
+            (data_cloud / "uploads" / "foto_antiga.jpg").write_bytes(b"ANTIGA")
+            (data_cloud / "uploads" / "recibo_ativo.jpg").write_bytes(b"ATIVO")
+            mgr_cloud.sync_now(force=True, reason="cloud_initial")
+
+            # Remove foto_antiga.jpg localmente e sincroniza: deve ir para lixeira no Drive
+            (data_cloud / "uploads" / "foto_antiga.jpg").unlink()
+            mgr_cloud.sync_now(force=False, reason="photo_removed")
+
+        # 2. Novo PC Desktop com banco semente antigo (1 usuário, 0 compras) importa token com restore_first=True:
+        # JAMAIS pode sobrescrever as 3 compras do Drive; deve restaurar as 3 compras e ignorar foto_antiga.jpg!
+        app_pc, eng_pc, _, mgr_pc, data_pc, _ = _build_test_environment(
+            root, fake_drive, is_cloud=False, subdir="desktop_seed"
+        )
+        self.addCleanup(eng_pc.dispose)
+        self.addCleanup(mgr_pc.shutdown)
+
+        with TestClient(app_pc) as c_pc:
+            s_pc = c_pc.post(
+                "/auth/setup",
+                json={"nome": "Luiz Seed Antigo", "usuario": "luiz", "senha": "Senha123"},
+            )
+            hdr_pc = {"Authorization": f"Bearer {s_pc.json()['access_token']}"}
+            (data_pc / "uploads" / "foto_antiga.jpg").write_bytes(b"ANTIGA_STALE")
+
+            imp = c_pc.post(
+                "/cloud/token",
+                headers=hdr_pc,
+                json={"token": compact, "restore_first": True, "sync_immediately": True},
+            )
+            self.assertEqual(imp.status_code, 200)
+            self.assertIn("access_token", imp.json())
+            hdr_pc = {"Authorization": f"Bearer {imp.json()['access_token']}"}
+            lancs_pc = c_pc.get("/lancamentos/", headers=hdr_pc).json()
+            self.assertEqual(lancs_pc["total"], 3)
+            self.assertTrue((data_pc / "uploads" / "recibo_ativo.jpg").is_file())
+            self.assertFalse((data_pc / "uploads" / "foto_antiga.jpg").exists())
+
+            # Cópia local de segurança antes da restauração foi preservada
+            self.assertTrue(
+                (data_pc / "cfg" / "backups_locais" / "financeiro_antes_restauracao.db").is_file()
+            )
+
+            # 3. Render avança para revisão mais nova (+1 compra -> total 4); Desktop reinicia limpo e puxa no boot!
+            with TestClient(app_cloud) as c_cloud2:
+                lg = c_cloud2.post("/auth/login", json={"usuario": "luiz", "senha": "Senha123"}).json()
+                c_cloud2.post(
+                    "/lancamentos/",
+                    headers={"Authorization": f"Bearer {lg['access_token']}"},
+                    json={
+                        "descricao": "Compra Nova Celular",
+                        "tipo": "compra_cartao",
+                        "valor_total": 250.0,
+                        "total_parcelas": 2,
+                        "data_lancamento": "2026-11-14",
+                        "cartao_id": cartao["id"],
+                    },
+                )
+                mgr_cloud.sync_now(force=False, reason="mobile_new_purchase")
+
+            boot_pc = mgr_pc.restore_from_drive(force=False, on_boot=True)
+            self.assertTrue(boot_pc["ok"])
+            self.assertTrue(boot_pc["restored"])
+            self.assertEqual(boot_pc["counts"]["lancamentos"], 4)
+
+            # 4. Restauração manual autenticada via HTTP POST /cloud/restore sem lock de sessão WAL
+            rest_http = c_pc.post("/cloud/restore", headers=hdr_pc, json={"force": True})
+            self.assertEqual(rest_http.status_code, 200)
+            self.assertEqual(rest_http.json()["restore_result"]["counts"]["lancamentos"], 4)
+
+        # 5. Simula falha transitória de rede no boot de um novo container Render com banco semente (1 usuário):
+        # auto-sync NÃO pode sobrescrever o Drive com o banco semente; deve restaurar assim que a rede voltar!
+        old_env = os.environ.get("GOOGLE_DRIVE_OAUTH_JSON")
+        os.environ["GOOGLE_DRIVE_OAUTH_JSON"] = compact
+        try:
+            app_r2, eng_r2, Sess_r2, mgr_r2, _, _ = _build_test_environment(
+                root, fake_drive, is_cloud=True, subdir="render_transient_fail"
+            )
+            self.addCleanup(eng_r2.dispose)
+            self.addCleanup(mgr_r2.shutdown)
+            with Sess_r2() as s_seed:
+                s_seed.add(models.Usuario(nome="Seed", email="luiz", senha_hash="h"))
+                s_seed.commit()
+
+            fake_drive.corrupt_downloads = True
+            fail_boot = mgr_r2.restore_from_drive(force=False, on_boot=True)
+            self.assertFalse(fail_boot["ok"])
+
+            # Mesmo se auto-sync tentar rodar enquanto a restauração inicial falhou, bloqueia sobrescrita:
+            blocked_sync = mgr_r2.sync_now(force=False, reason="startup_check")
+            self.assertFalse(blocked_sync["ok"])
+            self.assertTrue(blocked_sync.get("blocked_boot_restore_pending"))
+
+            # Rede normaliza -> auto-sync recupera a restauração automaticamente sem perder as 4 compras!
+            fake_drive.corrupt_downloads = False
+            recovered = mgr_r2.sync_now(force=False, reason="startup_check")
+            self.assertTrue(recovered["ok"])
+            self.assertEqual(recovered["counts"]["lancamentos"], 4)
+        finally:
+            if old_env is None:
+                os.environ.pop("GOOGLE_DRIVE_OAUTH_JSON", None)
+            else:
+                os.environ["GOOGLE_DRIVE_OAUTH_JSON"] = old_env
+
+    def test_main_app_health_seguranca_path_traversal_e_cli_status_isolados(self):
         import subprocess
         import sys
-        import main as backend_main
 
-        with TestClient(backend_main.app) as client:
-            health = client.get("/health")
-            self.assertEqual(health.status_code, 200)
-            body = health.json()
-            self.assertEqual(body["status"], "ok")
-            self.assertEqual(body["sistema"], "Administração Financeira")
-            self.assertIn("nuvem", body)
-            self.assertIn("drive_conectado", body["nuvem"])
-            self.assertEqual(client.get("/cloud/status").status_code, 401)
+        tmp_dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        env = dict(os.environ)
+        env["SEU_LUIZ_DATA_DIR"] = str(tmp_dir / "data")
+        env["CLOUD_CONFIG_DIR"] = str(tmp_dir / "cfg")
+        env.pop("GOOGLE_DRIVE_OAUTH_JSON", None)
 
-        cli_script = Path(__file__).resolve().parent.parent / "scripts" / "configurar_nuvem_drive.py"
+        probe_code = """
+import json, sys
+sys.path.insert(0, 'backend')
+import main as backend_main
+from database import engine
+from fastapi.testclient import TestClient
+
+with TestClient(backend_main.app) as client:
+    h_get = client.get('/health')
+    h_head = client.head('/health')
+    assert h_get.status_code == 200, h_get.status_code
+    assert h_head.status_code == 200, h_head.status_code
+    body = h_get.json()
+    assert body['status'] == 'ok'
+    assert body['sistema'] == 'Administração Financeira'
+    assert 'drive_conectado' in body['nuvem']
+    assert client.get('/cloud/status').status_code == 401
+
+    for attack in (
+        '/..%2f..%2fbackend%2fdatabase.py',
+        '/..%5c..%5cbackend%5cdatabase.py',
+        '/..%2f..%2fbackend%2ffinanceiro.db',
+    ):
+        resp = client.get(attack)
+        assert resp.status_code == 404, (attack, resp.status_code, resp.text[:80])
+        assert 'create_engine' not in resp.text
+engine.dispose()
+print('OK_ISOLATED_MAIN')
+"""
+        repo_root = Path(__file__).resolve().parent.parent
+        p_main = subprocess.run(
+            [sys.executable, "-c", probe_code],
+            cwd=str(repo_root),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=25,
+            check=True,
+        )
+        self.assertIn("OK_ISOLATED_MAIN", p_main.stdout)
+
+        cli_script = repo_root / "scripts" / "configurar_nuvem_drive.py"
         proc = subprocess.run(
             [sys.executable, str(cli_script), "--status"],
+            cwd=str(repo_root),
+            env=env,
             capture_output=True,
             text=True,
             timeout=20,
@@ -534,7 +733,73 @@ class CloudSyncHardeningTests(unittest.TestCase):
         )
         cli_json = json.loads(proc.stdout)
         self.assertIn("connected", cli_json)
+        self.assertFalse(cli_json["connected"])
         self.assertEqual(cli_json["keep_alive_interval_minutes"], 10)
+
+    def test_cli_oauth_loopback_ignora_favicon_sem_perder_codigo(self):
+        import subprocess
+        import sys
+
+        tmp_dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        env = dict(os.environ)
+        env["SEU_LUIZ_DATA_DIR"] = str(tmp_dir / "data")
+        env["CLOUD_CONFIG_DIR"] = str(tmp_dir / "cfg")
+        env.pop("GOOGLE_DRIVE_OAUTH_JSON", None)
+
+        probe = """
+import sys, tempfile, threading, urllib.parse, urllib.request
+from pathlib import Path
+from unittest.mock import patch
+
+sys.path.insert(0, 'backend')
+sys.path.insert(0, 'scripts')
+import configurar_nuvem_drive as cli_wiz
+from test_cloud_sync import FakeGoogleDriveServer, _build_test_environment
+
+fake_drive = FakeGoogleDriveServer(email='wizard@gmail.com')
+with tempfile.TemporaryDirectory() as td:
+    _, eng, _, mgr, _, _ = _build_test_environment(Path(td), fake_drive, is_cloud=False)
+    try:
+        def simulate_browser(auth_url: str) -> bool:
+            parsed = urllib.parse.urlparse(auth_url)
+            qs = urllib.parse.parse_qs(parsed.query)
+            redir = qs['redirect_uri'][0]
+            st = qs['state'][0]
+            base_loopback = redir.rsplit('/cloud/oauth/callback', 1)[0]
+
+            def fire():
+                urllib.request.urlopen(f'{base_loopback}/favicon.ico', timeout=5).read()
+                urllib.request.urlopen(
+                    f'{redir}?state={urllib.parse.quote(st)}&code=valid_oauth_code', timeout=5
+                ).read()
+                try:
+                    urllib.request.urlopen(f'{base_loopback}/favicon.ico', timeout=2).read()
+                except Exception:
+                    pass
+
+            threading.Thread(target=fire, daemon=True).start()
+            return True
+
+        with patch.object(cli_wiz.webbrowser, 'open', side_effect=simulate_browser):
+            st = cli_wiz.oauth_browser_one_click(mgr, timeout_sec=10)
+        assert st['connected'] is True
+        assert st['account'] == 'wizard@gmail.com'
+        print('OK_FAVICON_SAFE')
+    finally:
+        mgr.shutdown()
+        eng.dispose()
+"""
+        repo_root = Path(__file__).resolve().parent.parent
+        proc = subprocess.run(
+            [sys.executable, "-c", probe],
+            cwd=str(repo_root),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=25,
+            check=True,
+        )
+        self.assertIn("OK_FAVICON_SAFE", proc.stdout)
 
 
 if __name__ == "__main__":

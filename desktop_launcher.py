@@ -5,6 +5,19 @@ import socket
 import threading
 import webbrowser
 
+
+def _configure_console_utf8():
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is not None and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
+_configure_console_utf8()
+
 # Garante caminhos corretos tanto em modo script quanto empacotado (.exe com PyInstaller)
 if getattr(sys, 'frozen', False):
     ROOT_DIR = sys._MEIPASS
@@ -35,20 +48,22 @@ def abrir_navegador(porta):
     url = f"http://127.0.0.1:{porta}"
     try:
         webbrowser.open(url)
-    except Exception as e:
+    except Exception:
         print(f"Abra o navegador em: {url}")
 
 def main():
-    porta = encontrar_porta_livre(8000)
+    porta_env = int(os.environ.get("SEU_LUIZ_PORT") or 8000)
+    porta = encontrar_porta_livre(porta_env)
     print("=" * 60)
-    print("   ADMINISTRAÇÃO FINANCEIRA — SISTEMA DESKTOP")
+    print("   ADMINISTRAÇÃO FINANCEIRA - SISTEMA DESKTOP")
     print("=" * 60)
     print(f"Servidor local ativo em: http://127.0.0.1:{porta}")
-    print("Abrindo seu navegador automaticamente...")
+    no_browser = os.environ.get("SEU_LUIZ_NO_BROWSER", "").strip().lower() in ("1", "true", "yes")
+    if not no_browser:
+        print("Abrindo seu navegador automaticamente...")
+        threading.Thread(target=abrir_navegador, args=(porta,), daemon=True).start()
     print("Para encerrar o sistema, feche esta janela.")
-    print("=" * 60)
-
-    threading.Thread(target=abrir_navegador, args=(porta,), daemon=True).start()
+    print("=" * 60, flush=True)
 
     # Executa o servidor uvicorn integrado
     uvicorn.run(app, host="127.0.0.1", port=porta, log_level="warning")

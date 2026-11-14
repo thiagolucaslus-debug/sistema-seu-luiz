@@ -2,13 +2,14 @@ import os
 import sys
 import secrets
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 # Garante que a pasta backend esteja sempre no sys.path
 backend_dir = os.path.dirname(os.path.abspath(__file__))
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -77,11 +78,14 @@ cloud_sync_manager = CloudSyncManager(
 )
 cloud.set_cloud_manager(cloud_sync_manager)
 
-# Em containers efêmeros (ex.: Render), restaura automaticamente do Google Drive ANTES de abrir o banco local
+# Em containers efêmeros (ex.: Render) ou multi-dispositivo, sincroniza/restaura do Google Drive ANTES de abrir o banco local
+_boot_restore_ok = True
 if cloud_sync_manager.is_connected():
     try:
-        cloud_sync_manager.restore_from_drive(force=False, on_boot=True)
+        _boot_res = cloud_sync_manager.restore_from_drive(force=False, on_boot=True)
+        _boot_restore_ok = bool(_boot_res.get("ok", False))
     except Exception as _boot_err:
+        _boot_restore_ok = False
         print(f"[AVISO] Falha na restauração inicial do Google Drive: {_boot_err}")
 
 ensure_schema_and_migrations()
@@ -95,9 +99,15 @@ def _auto_sync_after_sqlalchemy_commit(session: Session) -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    # Caso o banco local já tenha dados e o Drive ainda não tenha backup, agenda sincronização inicial
-    if cloud_sync_manager.is_connected() and not cloud_sync_manager.status().get("last_sync_at"):
-        cloud_sync_manager.notify_change("startup_check")
+    if cloud_sync_manager.is_connected():
+        if not _boot_restore_ok:
+            # Se houve falha de rede transitória no boot, tenta restaurar antes de permitir auto-sync
+            try:
+                cloud_sync_manager.restore_from_drive(force=False, on_boot=True)
+            except Exception:
+                pass
+        elif not cloud_sync_manager.status().get("last_sync_at"):
+            cloud_sync_manager.notify_change("startup_check")
     try:
         yield
     finally:
@@ -130,6 +140,7 @@ async def auto_cloud_sync_on_mutations(request: Request, call_next):
         and response.status_code < 400
         and not request.url.path.startswith("/cloud/")
         and not request.url.path.startswith("/auth/login")
+        and not request.url.path.startswith("/whatsapp/")
     ):
         cloud_sync_manager.notify_change(f"http_{request.method}_{request.url.path}")
     return response
@@ -157,7 +168,7 @@ os.makedirs(uploads_dir, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
 
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 def health():
     return {
         "status": "ok",
@@ -174,18 +185,26 @@ if not os.path.exists(frontend_dist):
     frontend_dist = os.path.join(os.path.dirname(backend_dir), "frontend", "dist")
 
 if os.path.exists(frontend_dist):
-    assets_dir = os.path.join(frontend_dist, "assets")
-    if os.path.exists(assets_dir):
-        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+    frontend_root = Path(frontend_dist).resolve()
+    assets_dir = frontend_root / "assets"
+    if assets_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
     @app.get("/{full_path:path}")
     async def serve_frontend(full_path: str):
-        target = os.path.join(frontend_dist, full_path)
-        if full_path and os.path.isfile(target):
-            return FileResponse(target)
-        index_file = os.path.join(frontend_dist, "index.html")
-        if os.path.exists(index_file):
-            return FileResponse(index_file)
+        normalized = full_path.replace("\\", "/")
+        parts = [p for p in normalized.split("/") if p]
+        if any(p == ".." for p in parts):
+            raise HTTPException(status_code=404, detail="Recurso não encontrado.")
+        if parts:
+            candidate = (frontend_root / "/".join(parts)).resolve()
+            if not candidate.is_relative_to(frontend_root):
+                raise HTTPException(status_code=404, detail="Recurso não encontrado.")
+            if candidate.is_file():
+                return FileResponse(str(candidate))
+        index_file = frontend_root / "index.html"
+        if index_file.is_file():
+            return FileResponse(str(index_file))
         return {"mensagem": "Administração Financeira API em execução.", "docs": "/docs"}
 else:
     @app.get("/")

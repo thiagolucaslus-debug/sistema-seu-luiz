@@ -48,7 +48,7 @@ else:
     DATA_DIR = os.environ.get("SEU_LUIZ_DATA_DIR") or os.path.dirname(os.path.abspath(__file__))
     os.makedirs(DATA_DIR, exist_ok=True)
 
-# Diretório seguro para credenciais OAuth locais (fora do repositório Git no Windows)
+# Diretório seguro para credenciais OAuth locais (fora do repositório Git e fora da árvore pública do app)
 if os.environ.get("CLOUD_CONFIG_DIR"):
     CLOUD_CONFIG_DIR = os.environ["CLOUD_CONFIG_DIR"]
 elif os.name == "nt":
@@ -57,7 +57,11 @@ elif os.name == "nt":
         "AdministracaoFinanceira",
     )
 else:
-    CLOUD_CONFIG_DIR = DATA_DIR
+    CLOUD_CONFIG_DIR = os.path.join(
+        os.path.expanduser("~"),
+        ".config",
+        "AdministracaoFinanceira",
+    )
 
 os.makedirs(CLOUD_CONFIG_DIR, exist_ok=True)
 

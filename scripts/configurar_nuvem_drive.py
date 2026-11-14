@@ -1,15 +1,17 @@
 """
 Assistente interativo 1-clique para conectar o Google Drive ao Sistema Seu Luiz
-(Local + Render 24/7), inspirado no fluxo do Sistema Editor.
+(Local + Render 24/7 + GitHub Actions Secrets), inspirado no fluxo do Sistema Editor.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import getpass
 import http.server
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -19,6 +21,19 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
+
+def _configure_console_utf8() -> None:
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is not None and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
+_configure_console_utf8()
+
 ROOT_DIR = Path(__file__).resolve().parent.parent
 BACKEND_DIR = ROOT_DIR / "backend"
 if str(BACKEND_DIR) not in sys.path:
@@ -27,6 +42,8 @@ if str(BACKEND_DIR) not in sys.path:
 from database import CLOUD_CONFIG_DIR, DATA_DIR, DB_PATH, engine
 from main import ensure_schema_and_migrations
 from services.cloud_sync import DEFAULT_RENDER_URL, CloudSyncManager
+
+DEFAULT_GITHUB_REPO = "thiagolucaslus-debug/sistema-seu-luiz"
 
 
 def copy_to_clipboard_windows(text: str) -> bool:
@@ -65,24 +82,35 @@ def oauth_browser_one_click(mgr: CloudSyncManager, timeout_sec: int = 240) -> di
 
         def do_GET(self) -> None:
             parsed = urllib.parse.urlparse(self.path)
-            qs = urllib.parse.parse_qs(parsed.query)
-            captured["state"] = (qs.get("state") or [""])[0]
-            captured["code"] = (qs.get("code") or [""])[0]
-            captured["error"] = (qs.get("error") or [""])[0]
+            if parsed.path != "/cloud/oauth/callback":
+                self.send_response(204)
+                self.end_headers()
+                return
 
-            ok = bool(captured["code"] and not captured["error"])
+            qs = urllib.parse.parse_qs(parsed.query)
+            state_val = (qs.get("state") or [""])[0]
+            code_val = (qs.get("code") or [""])[0]
+            err_val = (qs.get("error") or [""])[0]
+
+            if not done_event.is_set():
+                captured["state"] = state_val
+                captured["code"] = code_val
+                captured["error"] = err_val
+
+            ok = bool(code_val and not err_val)
             title = "Google Drive Conectado!" if ok else "Autorizacao nao concluida"
             msg = (
-                "Pode fechar esta aba e voltar para a janela preta do assistente."
+                "Pode fechar esta aba e voltar para a janela do assistente."
                 if ok
                 else "Tente novamente na janela do assistente."
             )
             html = (
                 "<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'>"
+                "<link rel='icon' href='data:,'>"
                 f"<title>{title}</title></head>"
                 "<body style='background:#10151d;color:#f3f6fb;font-family:sans-serif;"
                 "display:grid;place-items:center;min-height:95vh;text-align:center'>"
-                f"<div style='background:#1a202b;padding:28px;border-radius:16px;border:1px solid #343e4d'>"
+                "<div style='background:#1a202b;padding:28px;border-radius:16px;border:1px solid #343e4d'>"
                 f"<h2>{title}</h2><p>{msg}</p></div>"
                 "<script>setTimeout(()=>window.close(),1500);</script></body></html>"
             ).encode("utf-8")
@@ -118,12 +146,103 @@ def oauth_browser_one_click(mgr: CloudSyncManager, timeout_sec: int = 240) -> di
         server.server_close()
 
 
+def _resolve_github_token() -> str:
+    env_tok = (os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or "").strip()
+    if env_tok:
+        return env_tok
+
+    git_candidates = [
+        str(ROOT_DIR / "bin" / "git" / "cmd" / "git.exe"),
+        shutil.which("git") or "",
+    ]
+    for git_bin in git_candidates:
+        if not git_bin or not os.path.isfile(git_bin):
+            continue
+        try:
+            proc = subprocess.run(
+                [git_bin, "credential", "fill"],
+                input=b"protocol=https\nhost=github.com\n\n",
+                capture_output=True,
+                timeout=8,
+                check=True,
+            )
+            kv = dict(
+                line.split("=", 1)
+                for line in proc.stdout.decode("utf-8", errors="ignore").splitlines()
+                if "=" in line
+            )
+            if kv.get("password"):
+                return kv["password"].strip()
+        except Exception:
+            continue
+    return ""
+
+
+def push_secrets_to_github_actions(
+    secrets_map: dict[str, str],
+    repo: str = DEFAULT_GITHUB_REPO,
+) -> bool:
+    """
+    Grava automaticamente GOOGLE_DRIVE_OAUTH_JSON (+ credenciais de auto-hidratacao)
+    nos Secrets do GitHub Actions (igual ao Sistema Editor), garantindo que o workflow
+    keep_alive_24h.yml reconecte o Render sozinho caso o container reinicie.
+    """
+    clean_secrets = {k: v for k, v in secrets_map.items() if k and v}
+    if not clean_secrets:
+        return False
+
+    gh_token = _resolve_github_token()
+    if not gh_token:
+        return False
+
+    try:
+        from nacl import encoding, public
+    except ImportError:
+        return False
+
+    headers = {
+        "Authorization": f"Bearer {gh_token}",
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "SistemaSeuLuiz-CloudSetup/2.2",
+        "Content-Type": "application/json",
+    }
+    try:
+        pk_req = urllib.request.Request(
+            f"https://api.github.com/repos/{repo}/actions/secrets/public-key",
+            headers=headers,
+            method="GET",
+        )
+        with urllib.request.urlopen(pk_req, timeout=20) as resp:
+            pk_info = json.loads(resp.read().decode("utf-8"))
+        pub_key = public.PublicKey(pk_info["key"].encode("utf-8"), encoding.Base64Encoder())
+        sealed_box = public.SealedBox(pub_key)
+
+        for secret_name, secret_val in clean_secrets.items():
+            enc_bytes = sealed_box.encrypt(secret_val.encode("utf-8"))
+            enc_b64 = base64.b64encode(enc_bytes).decode("ascii")
+            put_req = urllib.request.Request(
+                f"https://api.github.com/repos/{repo}/actions/secrets/{secret_name}",
+                data=json.dumps(
+                    {"encrypted_value": enc_b64, "key_id": pk_info["key_id"]}
+                ).encode("utf-8"),
+                headers=headers,
+                method="PUT",
+            )
+            with urllib.request.urlopen(put_req, timeout=20) as put_resp:
+                if put_resp.status not in (201, 204):
+                    return False
+        return True
+    except Exception:
+        return False
+
+
 def push_token_to_render_live(
     compact_token: str,
     render_url: str = DEFAULT_RENDER_URL,
     usuario: str = "",
     senha: str = "",
-) -> dict:
+    restore_first: bool = True,
+) -> tuple[dict, str, str]:
     base = render_url.strip().rstrip("/")
     if not usuario:
         usuario = input("Usuario de login no sistema online [Enter = luiz]: ").strip() or "luiz"
@@ -144,7 +263,11 @@ def push_token_to_render_live(
     tok_req = urllib.request.Request(
         f"{base}/cloud/token",
         data=json.dumps(
-            {"token": compact_token, "restore_first": False, "sync_immediately": True}
+            {
+                "token": compact_token,
+                "restore_first": restore_first,
+                "sync_immediately": True,
+            }
         ).encode("utf-8"),
         headers={
             "Content-Type": "application/json",
@@ -153,7 +276,7 @@ def push_token_to_render_live(
         method="POST",
     )
     with urllib.request.urlopen(tok_req, timeout=60) as resp2:
-        return json.loads(resp2.read().decode("utf-8"))
+        return json.loads(resp2.read().decode("utf-8")), usuario, senha
 
 
 def persist_env_via_render_api(compact_token: str, render_api_key: str) -> bool:
@@ -191,7 +314,7 @@ def persist_env_via_render_api(compact_token: str, render_api_key: str) -> bool:
 
 def check_online_health(render_url: str = DEFAULT_RENDER_URL) -> dict:
     url = f"{render_url.strip().rstrip('/')}/health"
-    req = urllib.request.Request(url, headers={"User-Agent": "SistemaSeuLuiz-Setup/2.1"})
+    req = urllib.request.Request(url, headers={"User-Agent": "SistemaSeuLuiz-Setup/2.2"})
     with urllib.request.urlopen(req, timeout=35) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
@@ -199,7 +322,7 @@ def check_online_health(render_url: str = DEFAULT_RENDER_URL) -> dict:
 def print_render_instructions(compact_token: str) -> None:
     copied = copy_to_clipboard_windows(compact_token)
     print("\n" + "=" * 72)
-    print(" PARA DEIXAR PERMANENTE NO RENDER (FEITO UMA UNICA VEZ):")
+    print(" PARA DEIXAR INSTANTANEO NO BOOT DO RENDER (FEITO UMA UNICA VEZ):")
     print("=" * 72)
     if copied:
         print(" [OK] O codigo ja foi COPIADO automaticamente para o seu Ctrl+V!")
@@ -216,7 +339,7 @@ def interactive_menu() -> None:
     while True:
         st = mgr.status()
         print("\n" + "=" * 72)
-        print("   NUVEM 24/7 + GOOGLE DRIVE — SISTEMA FINANCEIRO SEU LUIZ (R$ 0,00)")
+        print("   NUVEM 24/7 + GOOGLE DRIVE - SISTEMA FINANCEIRO SEU LUIZ (R$ 0,00)")
         print("=" * 72)
         conta = st["account"] or ("Conectado" if st["connected"] else "NAO CONECTADO")
         print(f" Status Google Drive neste PC : {conta}")
@@ -224,7 +347,7 @@ def interactive_menu() -> None:
             print(f" Pasta no seu Google Drive    : {st['folder_url']}")
         print(f" Servidor Online 24/7         : {DEFAULT_RENDER_URL}")
         print("-" * 72)
-        print(" [1] Conectar meu Google Drive em 1 Clique + Fazer Backup Inicial")
+        print(" [1] Conectar meu Google Drive em 1 Clique + Sincronizar Tudo")
         print(" [2] Ativar Google Drive no Servidor Online (sistema-seu-luiz.onrender.com)")
         print(" [3] Fazer Backup Manual Agora (PC -> Google Drive)")
         print(" [4] Restaurar Dados do Google Drive para este PC")
@@ -240,10 +363,12 @@ def interactive_menu() -> None:
             try:
                 res = oauth_browser_one_click(mgr)
                 print(f"\n[SUCESSO] Conta Google conectada: {res.get('account')}")
-                print("Enviando backup inicial seguro (financeiro.db + fotos/comprovantes)...")
-                sync_info = mgr.sync_now(force=True, reason="wizard_initial")
-                print(f"[OK] Backup salvo no Google Drive! Pasta: {sync_info.get('folder_url')}")
+                print("Sincronizando dados de forma segura (financeiro.db + fotos/comprovantes)...")
+                sync_info = mgr.smart_initial_sync(prefer_restore=True, reason="wizard_initial")
+                print(f"[OK] Google Drive sincronizado! Pasta: {sync_info.get('folder_url') or mgr.status().get('folder_url')}")
                 exported = mgr.export_oauth_token()
+                if push_secrets_to_github_actions({"GOOGLE_DRIVE_OAUTH_JSON": exported["compact_token"]}):
+                    print("[OK] Token GOOGLE_DRIVE_OAUTH_JSON salvo automaticamente no GitHub Secrets!")
                 print_render_instructions(exported["compact_token"])
 
                 enviar = (
@@ -252,8 +377,15 @@ def interactive_menu() -> None:
                     .lower()
                 )
                 if enviar not in ("n", "nao", "não"):
-                    live_res = push_token_to_render_live(exported["compact_token"])
-                    print(f"[OK] Servidor online conectado ao Google Drive ({live_res.get('account')})!")
+                    live_res, usr, pwd = push_token_to_render_live(exported["compact_token"], restore_first=True)
+                    push_secrets_to_github_actions(
+                        {
+                            "GOOGLE_DRIVE_OAUTH_JSON": exported["compact_token"],
+                            "RENDER_ADMIN_USER": usr,
+                            "RENDER_ADMIN_PASSWORD": pwd,
+                        }
+                    )
+                    print(f"[OK] Servidor online conectado ao Google Drive ({live_res.get('account')}) e blindado no GitHub Actions!")
             except Exception as exc:
                 print(f"\n[ERRO] {exc}")
         elif op == "2":
@@ -261,12 +393,20 @@ def interactive_menu() -> None:
                 exported = mgr.export_oauth_token()
                 print_render_instructions(exported["compact_token"])
                 api_key = input(
-                    "Opcional — se tiver Render API Key (rnd_...), cole aqui [Enter p/ login direto no painel]: "
+                    "Opcional - se tiver Render API Key (rnd_...), cole aqui [Enter p/ login direto no painel]: "
                 ).strip()
                 if api_key.startswith("rnd_"):
                     if persist_env_via_render_api(exported["compact_token"], api_key):
                         print("[OK] Variavel GOOGLE_DRIVE_OAUTH_JSON gravada permanentemente no Render!")
-                live_res = push_token_to_render_live(exported["compact_token"])
+                live_res, usr, pwd = push_token_to_render_live(exported["compact_token"], restore_first=True)
+                if push_secrets_to_github_actions(
+                    {
+                        "GOOGLE_DRIVE_OAUTH_JSON": exported["compact_token"],
+                        "RENDER_ADMIN_USER": usr,
+                        "RENDER_ADMIN_PASSWORD": pwd,
+                    }
+                ):
+                    print("[OK] Auto-hidratacao 24/7 configurada nos Secrets do GitHub Actions!")
                 print(f"[OK] Servidor online sincronizado com Google Drive ({live_res.get('account')})!")
             except Exception as exc:
                 print(f"\n[ERRO] {exc}")

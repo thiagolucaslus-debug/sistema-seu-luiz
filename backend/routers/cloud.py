@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime
 from html import escape
 from typing import Any, Optional
@@ -7,6 +8,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
+from sqlalchemy.orm import object_session
 
 import auth
 import models
@@ -164,18 +166,62 @@ def concluir_autorizacao_google(
         return _oauth_result_html(False, "Falha ao conectar Google Drive", str(exc))
 
 
+def _release_user_session(usuario: models.Usuario) -> None:
+    """Libera a conexão SQLite da requisição atual antes de restaurar/checkpointar o WAL."""
+    sess = object_session(usuario)
+    if sess is not None:
+        try:
+            sess.expunge_all()
+            sess.close()
+        except Exception:
+            pass
+
+
+def _issue_refreshed_token_after_restore(
+    mgr: CloudSyncManager, preferred_email: str
+) -> str | None:
+    """Reemite JWT compatível com o hash do banco restaurado para manter a sessão ativa sem relogin."""
+    if not mgr.db_path.is_file():
+        return None
+    conn = sqlite3.connect(str(mgr.db_path), timeout=10.0)
+    try:
+        row = conn.execute(
+            "SELECT email, senha_hash FROM usuarios WHERE email = ? LIMIT 1",
+            (preferred_email,),
+        ).fetchone()
+        if row is None:
+            all_rows = conn.execute("SELECT email, senha_hash FROM usuarios LIMIT 2").fetchall()
+            if len(all_rows) == 1:
+                row = all_rows[0]
+        if not row:
+            return None
+        detached_user = models.Usuario(email=row[0], senha_hash=row[1])
+        return auth.criar_token(detached_user)
+    except Exception:
+        return None
+    finally:
+        conn.close()
+
+
 @router.post("/token")
 def importar_token_nuvem(
     req: TokenImportRequest,
     usuario: models.Usuario = Depends(auth.get_usuario_atual),
     mgr: CloudSyncManager = Depends(get_cloud_manager),
 ):
+    user_email = str(usuario.email or "")
+    _release_user_session(usuario)
     try:
-        return mgr.import_oauth_token(
+        res = mgr.import_oauth_token(
             req.token,
             restore_first=req.restore_first,
             sync_immediately=req.sync_immediately,
         )
+        if req.restore_first:
+            new_tok = _issue_refreshed_token_after_restore(mgr, user_email)
+            if new_tok:
+                res["access_token"] = new_tok
+        return res
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -223,6 +269,8 @@ def restaurar_agora(
             status_code=400,
             detail="Conecte sua conta Google Drive antes de restaurar o backup.",
         )
+    user_email = str(usuario.email or "")
+    _release_user_session(usuario)
     try:
         result = mgr.restore_from_drive(force=req.force, on_boot=False)
         if not result.get("ok"):
@@ -237,6 +285,9 @@ def restaurar_agora(
             )
         status_now = mgr.status()
         status_now["restore_result"] = result
+        new_tok = _issue_refreshed_token_after_restore(mgr, user_email)
+        if new_tok:
+            status_now["access_token"] = new_tok
         return status_now
     except HTTPException:
         raise

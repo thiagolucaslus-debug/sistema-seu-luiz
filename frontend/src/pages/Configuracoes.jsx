@@ -177,12 +177,22 @@ function Senha() {
 }
 
 function NuvemGoogleDrive() {
+  const { atualizarUsuario } = useAuth();
   const [status, setStatus] = useState({ checking: true });
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(null);
   const [tokenInput, setTokenInput] = useState('');
   const [restoreFirst, setRestoreFirst] = useState(true);
   const isLocalHost = typeof window !== 'undefined' && isLocalBrowserHost(window.location.hostname);
+
+  async function sincronizarPerfilRestaurado() {
+    try {
+      const { data: me } = await auth.me();
+      if (me) atualizarUsuario(me);
+    } catch {
+      // Mantém sessão atual caso não haja alteração de perfil
+    }
+  }
 
   async function carregarStatus() {
     try {
@@ -253,8 +263,10 @@ function NuvemGoogleDrive() {
         restore_first: restoreFirst,
         sync_immediately: true,
       });
+      if (data.access_token) localStorage.setItem('token', data.access_token);
       setStatus(data);
       setTokenInput('');
+      if (restoreFirst) await sincronizarPerfilRestaurado();
       setMessage({ text: `Google Drive conectado (${data.account || 'conta vinculada'})! Seus dados estão protegidos.` });
     } catch (error) {
       setMessage({ error: true, text: detail(error, 'Código inválido ou expirado.') });
@@ -303,7 +315,9 @@ function NuvemGoogleDrive() {
     setMessage(null);
     try {
       const { data } = await cloud.restoreNow({ force: true });
+      if (data.access_token) localStorage.setItem('token', data.access_token);
       setStatus(data);
+      await sincronizarPerfilRestaurado();
       setMessage({ text: 'Dados e comprovantes restaurados do Google Drive com sucesso!' });
     } catch (error) {
       setMessage({ error: true, text: detail(error, 'Falha ao restaurar dados do Google Drive.') });

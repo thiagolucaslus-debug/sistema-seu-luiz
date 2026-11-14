@@ -15,9 +15,9 @@ O **Sistema Financeiro Seu Luiz** (`https://sistema-seu-luiz.onrender.com`) cont
 ## Como ativar o Google Drive em 1 minuto (Uma Única Vez)
 
 1. No computador, dê dois cliques em **`CONFIGURAR_NUVEM_24H.bat`** (ou abra **Configurações → Nuvem 24/7 & Google Drive** no sistema local).
-2. Escolha a opção **`[1] Conectar meu Google Drive em 1 Clique + Fazer Backup Inicial`**.
+2. Escolha a opção **`[1] Conectar meu Google Drive em 1 Clique + Sincronizar Tudo`**.
 3. Faça login na sua conta Google na aba que abrir e clique em **Continuar / Permitir**.
-4. O assistente fará o backup inicial imediatamente e já copiará o código `GOOGLE_DRIVE_OAUTH_JSON` (`GDRIVE1:...`) para o seu `Ctrl+V`.
+4. O assistente sincronizará imediatamente os dados com proteção anti-perda, gravará os *Secrets* de auto-hidratação no GitHub Actions automaticamente e já copiará o código `GOOGLE_DRIVE_OAUTH_JSON` (`GDRIVE1:...`) para o seu `Ctrl+V`.
 5. Para deixar permanente no Render mesmo após futuras atualizações:
    - Abra [dashboard.render.com](https://dashboard.render.com) → clique no serviço **`sistema-seu-luiz`** → menu **`Environment`**.
    - Clique em **Add Environment Variable**:
