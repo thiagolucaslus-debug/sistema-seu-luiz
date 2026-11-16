@@ -70,6 +70,8 @@ TRACKED_TABLES = (
     "pagamentos_pessoa",
     "pagamentos_fatura",
     "solicitacoes_lancamento",
+    "dividas",
+    "divida_parcelas",
 )
 
 
@@ -2176,6 +2178,11 @@ class CloudSyncManager:
                         allowed_uploads = own_uploads
 
                     with conn:
+                        if "divida_parcelas" in existing_tables and "dividas" in existing_tables:
+                            conn.execute(
+                                "DELETE FROM divida_parcelas WHERE divida_id NOT IN (SELECT id FROM dividas WHERE usuario_id = ?)",
+                                (uid,),
+                            )
                         if "parcelas" in existing_tables and "lancamentos" in existing_tables:
                             conn.execute(
                                 "DELETE FROM parcelas WHERE lancamento_id NOT IN (SELECT id FROM lancamentos WHERE usuario_id = ?)",
@@ -2187,6 +2194,8 @@ class CloudSyncManager:
                                 (uid,),
                             )
                         for tbl in (
+                            "divida_parcelas",
+                            "dividas",
                             "solicitacoes_lancamento",
                             "pagamentos_pessoa",
                             "pagamentos_fatura",

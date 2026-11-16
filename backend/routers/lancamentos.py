@@ -242,6 +242,35 @@ def cancelar_lancamento(id: int, db: Session = Depends(get_db), usuario = Depend
     lanc.cancelado = True
     for p in lanc.parcelas:
         p.status = "cancelado"
+
+    # Reconcilia eventual parcela/competência de Dívida vinculada a este lançamento bancário
+    parcelas_divida = (
+        db.query(models.DividaParcela)
+        .filter(
+            models.DividaParcela.lancamento_id == lanc.id,
+            models.DividaParcela.usuario_id == usuario.id,
+        )
+        .all()
+    )
+    for pd in parcelas_divida:
+        pd.lancamento_id = None
+        pd.conta_id = None
+        if (
+            pd.divida
+            and pd.divida.tipo_compromisso == "fixa"
+            and round(float(pd.valor_atual), 2) == round(float(pd.divida.valor_parcela), 2)
+        ):
+            db.delete(pd)
+        else:
+            pd.status = "pendente"
+            pd.valor_pago = None
+            pd.desconto = 0.0
+            pd.acrescimo = 0.0
+            pd.antecipada = False
+            pd.pago_anteriormente = False
+            pd.data_pagamento = None
+            pd.forma_pagamento = None
+
     bump_user_sync_rev(db, usuario.id)
     db.commit()
     return {"ok": True, "mensagem": "Lançamento cancelado com sucesso."}

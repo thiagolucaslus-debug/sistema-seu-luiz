@@ -210,3 +210,65 @@ class SolicitacaoLancamento(Base):
     pessoa = relationship("Pessoa", back_populates="solicitacoes")
     cartao = relationship("Cartao")
     lancamento = relationship("Lancamento")
+
+
+class Divida(Base):
+    __tablename__ = "dividas"
+    id = Column(Integer, primary_key=True, index=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=True, index=True)
+    nome = Column(String(150), nullable=False)
+    credor = Column(String(120), nullable=True)
+    categoria = Column(String(80), default="Financiamento")
+    tipo_compromisso = Column(String(30), nullable=False, default="parcelada")  # "parcelada" ou "fixa"
+    valor_parcela = Column(Float, nullable=False)
+    dia_vencimento = Column(Integer, nullable=False, default=10)
+    total_parcelas = Column(Integer, nullable=True)
+    parcelas_pagas_anteriores = Column(Integer, nullable=False, default=0)
+    mes_inicio = Column(Integer, nullable=False)
+    ano_inicio = Column(Integer, nullable=False)
+    taxa_juros_mensal = Column(Float, nullable=False, default=0.0)
+    desconto_antecipacao_pct = Column(Float, nullable=False, default=0.0)
+    conta_padrao_id = Column(Integer, ForeignKey("contas_bancarias.id"), nullable=True)
+    modulo_id = Column(Integer, ForeignKey("modulos.id"), nullable=True)
+    cor = Column(String(20), default="#2563EB")
+    observacoes = Column(Text, nullable=True)
+    ativa = Column(Boolean, default=True)
+    created_at = Column(DateTime, server_default=func.now())
+
+    conta_padrao = relationship("ContaBancaria", foreign_keys=[conta_padrao_id])
+    modulo = relationship("Modulo", foreign_keys=[modulo_id])
+    parcelas = relationship(
+        "DividaParcela",
+        back_populates="divida",
+        cascade="all, delete-orphan",
+        order_by="DividaParcela.ano.asc(), DividaParcela.mes.asc(), DividaParcela.numero.asc()",
+    )
+
+
+class DividaParcela(Base):
+    __tablename__ = "divida_parcelas"
+    id = Column(Integer, primary_key=True, index=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=True, index=True)
+    divida_id = Column(Integer, ForeignKey("dividas.id"), nullable=False, index=True)
+    numero = Column(Integer, nullable=False, default=1)
+    mes = Column(Integer, nullable=False)
+    ano = Column(Integer, nullable=False)
+    vencimento = Column(Date, nullable=False)
+    valor_original = Column(Float, nullable=False)
+    valor_atual = Column(Float, nullable=False)
+    valor_pago = Column(Float, nullable=True)
+    desconto = Column(Float, nullable=False, default=0.0)
+    acrescimo = Column(Float, nullable=False, default=0.0)
+    status = Column(String(20), nullable=False, default="pendente")  # "pendente" ou "pago"
+    pago_anteriormente = Column(Boolean, nullable=False, default=False)
+    antecipada = Column(Boolean, nullable=False, default=False)
+    data_pagamento = Column(Date, nullable=True)
+    forma_pagamento = Column(String(80), nullable=True)
+    conta_id = Column(Integer, ForeignKey("contas_bancarias.id"), nullable=True)
+    lancamento_id = Column(Integer, ForeignKey("lancamentos.id"), nullable=True)
+    observacao = Column(Text, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+
+    divida = relationship("Divida", back_populates="parcelas")
+    conta = relationship("ContaBancaria", foreign_keys=[conta_id])
+    lancamento = relationship("Lancamento", foreign_keys=[lancamento_id])

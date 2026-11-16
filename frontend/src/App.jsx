@@ -9,6 +9,7 @@ import Cartoes from './pages/Cartoes';
 import Contas from './pages/Contas';
 import Pessoas from './pages/Pessoas';
 import Modulos from './pages/Modulos';
+import Dividas from './pages/Dividas';
 import Relatorios from './pages/Relatorios';
 import Configuracoes from './pages/Configuracoes';
 import WhatsApp from './pages/WhatsApp';
@@ -50,6 +51,7 @@ function AppRoutes() {
 
       {/* Rotas Protegidas do Sistema */}
       <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+      <Route path="/dividas" element={<ProtectedRoute><Dividas /></ProtectedRoute>} />
       <Route path="/fechamento" element={<ProtectedRoute><FechamentoMes /></ProtectedRoute>} />
       <Route path="/aprovacoes" element={<ProtectedRoute><Aprovacoes /></ProtectedRoute>} />
       <Route path="/lancamentos" element={<ProtectedRoute><Lancamentos /></ProtectedRoute>} />

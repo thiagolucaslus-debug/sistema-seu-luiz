@@ -14,6 +14,8 @@ USER_OWNED_TABLES = (
     "pagamentos_pessoa",
     "pagamentos_fatura",
     "solicitacoes_lancamento",
+    "dividas",
+    "divida_parcelas",
 )
 
 

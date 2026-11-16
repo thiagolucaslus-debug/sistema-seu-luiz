@@ -8,7 +8,7 @@ import ModalAcessoCelular from './ModalAcessoCelular';
 import {
   LayoutDashboard, CreditCard, Building2, Users, Grid3X3,
   ListPlus, BarChart3, Menu, X, LogOut, ChevronRight, Settings,
-  Sun, Moon, MessageCircle, CalendarCheck, CheckSquare, Smartphone
+  Sun, Moon, MessageCircle, CalendarCheck, CheckSquare, Smartphone, Target
 } from 'lucide-react';
 
 export default function Layout({ children }) {
@@ -47,6 +47,7 @@ export default function Layout({ children }) {
 
   const navItems = [
     { path: '/', label: 'Visão Geral', icon: LayoutDashboard },
+    { path: '/dividas', label: 'Dívidas & Estratégia', icon: Target, destaque: true },
     { path: '/fechamento', label: 'Fechamento do Mês', icon: CalendarCheck, destaque: true },
     { path: '/aprovacoes', label: 'Aprovações', icon: CheckSquare, badge: pendentesCount },
     { path: '/lancamentos', label: 'Lançamentos', icon: ListPlus },
@@ -261,37 +262,44 @@ export default function Layout({ children }) {
         <nav className="lg:hidden fixed bottom-0 inset-x-0 bg-slate-900/95 backdrop-blur border-t border-slate-800 z-30 flex items-center justify-around py-2 px-1">
           <Link
             to="/"
-            className={`flex flex-col items-center gap-0.5 text-[11px] ${location.pathname === '/' ? 'text-blue-400 font-bold' : 'text-slate-400'}`}
+            className={`flex flex-col items-center gap-0.5 text-[10px] ${location.pathname === '/' ? 'text-blue-400 font-bold' : 'text-slate-400'}`}
           >
-            <LayoutDashboard size={19} />
+            <LayoutDashboard size={18} />
             <span>Início</span>
           </Link>
           <Link
-            to="/fechamento"
-            className={`flex flex-col items-center gap-0.5 text-[11px] ${location.pathname === '/fechamento' ? 'text-blue-400 font-bold' : 'text-slate-400'}`}
+            to="/dividas"
+            className={`flex flex-col items-center gap-0.5 text-[10px] ${location.pathname === '/dividas' ? 'text-blue-400 font-bold' : 'text-slate-400'}`}
           >
-            <CalendarCheck size={19} />
+            <Target size={18} />
+            <span>Dívidas</span>
+          </Link>
+          <Link
+            to="/fechamento"
+            className={`flex flex-col items-center gap-0.5 text-[10px] ${location.pathname === '/fechamento' ? 'text-blue-400 font-bold' : 'text-slate-400'}`}
+          >
+            <CalendarCheck size={18} />
             <span>Fechamento</span>
           </Link>
           <Link
             to="/lancamentos"
-            className={`flex flex-col items-center gap-0.5 text-[11px] ${location.pathname === '/lancamentos' ? 'text-blue-400 font-bold' : 'text-slate-400'}`}
+            className={`flex flex-col items-center gap-0.5 text-[10px] ${location.pathname === '/lancamentos' ? 'text-blue-400 font-bold' : 'text-slate-400'}`}
           >
-            <ListPlus size={19} />
+            <ListPlus size={18} />
             <span>Lançar</span>
           </Link>
           <Link
             to="/cartoes"
-            className={`flex flex-col items-center gap-0.5 text-[11px] ${location.pathname === '/cartoes' ? 'text-blue-400 font-bold' : 'text-slate-400'}`}
+            className={`flex flex-col items-center gap-0.5 text-[10px] ${location.pathname === '/cartoes' ? 'text-blue-400 font-bold' : 'text-slate-400'}`}
           >
-            <CreditCard size={19} />
+            <CreditCard size={18} />
             <span>Cartões</span>
           </Link>
           <Link
             to="/pessoas"
-            className={`flex flex-col items-center gap-0.5 text-[11px] ${location.pathname === '/pessoas' ? 'text-blue-400 font-bold' : 'text-slate-400'}`}
+            className={`flex flex-col items-center gap-0.5 text-[10px] ${location.pathname === '/pessoas' ? 'text-blue-400 font-bold' : 'text-slate-400'}`}
           >
-            <Users size={19} />
+            <Users size={18} />
             <span>Pessoas</span>
           </Link>
         </nav>

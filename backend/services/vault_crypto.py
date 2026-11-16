@@ -128,6 +128,7 @@ def merge_missing_users_sqlite(base_db_path: Path, extra_db_path: Path) -> int:
                 modulo_map: dict[int, int] = {}
                 subcat_map: dict[int, int] = {}
                 lanc_map: dict[int, int] = {}
+                divida_map: dict[int, int] = {}
 
                 for tbl, id_map in (
                     ("contas_bancarias", conta_map),
@@ -305,6 +306,55 @@ def merge_missing_users_sqlite(base_db_path: Path, extra_db_path: Path) -> int:
                                 f"INSERT INTO solicitacoes_lancamento ({', '.join(b_cols)}) VALUES ({', '.join('?' for _ in b_cols)})",
                                 vals,
                             )
+
+                if "dividas" in extra_tables and "dividas" in base_tables:
+                    e_cols = _cols(extra_conn, "dividas")
+                    if "usuario_id" in e_cols:
+                        b_cols = [c for c in _cols(base_conn, "dividas") if c != "id" and c in e_cols]
+                        for row in extra_conn.execute(
+                            "SELECT * FROM dividas WHERE usuario_id = ? ORDER BY id ASC",
+                            (old_uid,),
+                        ).fetchall():
+                            vals = []
+                            for c in b_cols:
+                                v = row[c]
+                                if c == "usuario_id":
+                                    v = new_uid
+                                elif c == "conta_padrao_id" and v is not None:
+                                    v = conta_map.get(int(v))
+                                elif c == "modulo_id" and v is not None:
+                                    v = modulo_map.get(int(v))
+                                vals.append(v)
+                            c_ins = base_conn.execute(
+                                f"INSERT INTO dividas ({', '.join(b_cols)}) VALUES ({', '.join('?' for _ in b_cols)})",
+                                vals,
+                            )
+                            divida_map[int(row["id"])] = int(c_ins.lastrowid)
+
+                if "divida_parcelas" in extra_tables and "divida_parcelas" in base_tables and divida_map:
+                    e_cols = _cols(extra_conn, "divida_parcelas")
+                    b_cols = [c for c in _cols(base_conn, "divida_parcelas") if c != "id" and c in e_cols]
+                    ph_d = ",".join("?" for _ in divida_map)
+                    for row in extra_conn.execute(
+                        f"SELECT * FROM divida_parcelas WHERE divida_id IN ({ph_d}) ORDER BY id ASC",
+                        list(divida_map.keys()),
+                    ).fetchall():
+                        vals = []
+                        for c in b_cols:
+                            v = row[c]
+                            if c == "usuario_id":
+                                v = new_uid
+                            elif c == "divida_id":
+                                v = divida_map[int(v)]
+                            elif c == "conta_id" and v is not None:
+                                v = conta_map.get(int(v))
+                            elif c == "lancamento_id" and v is not None:
+                                v = lanc_map.get(int(v))
+                            vals.append(v)
+                        base_conn.execute(
+                            f"INSERT INTO divida_parcelas ({', '.join(b_cols)}) VALUES ({', '.join('?' for _ in b_cols)})",
+                            vals,
+                        )
 
         return merged_users
     finally:

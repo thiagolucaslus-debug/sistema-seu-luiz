@@ -112,6 +112,19 @@ export const modulos = {
   criarSubcategoria: (data) => api.post('/modulos/subcategorias', data),
 };
 
+export const dividas = {
+  painel: (params) => api.get('/dividas/painel', { params }),
+  listar: (params) => api.get('/dividas/', { params }),
+  criar: (data) => api.post('/dividas/', data),
+  atualizar: (id, data) => api.put(`/dividas/${id}`, data),
+  deletar: (id, params) => api.delete(`/dividas/${id}`, { params }),
+  pagar: (id, data) => api.post(`/dividas/${id}/pagar`, data),
+  estornar: (id, data) => api.post(`/dividas/${id}/estornar`, data),
+  antecipar: (id, data) => api.post(`/dividas/${id}/antecipar`, data),
+  ajustarMes: (id, data) => api.put(`/dividas/${id}/ajuste-mes`, data),
+  simular: (data) => api.post('/dividas/simular', data),
+};
+
 export const relatorios = {
   dashboard: (mes, ano) => api.get('/relatorios/dashboard', { params: { mes, ano } }),
   parcelasFuturas: (meses) => api.get('/relatorios/parcelas-futuras', { params: { meses } }),

@@ -3,7 +3,8 @@ import { Link } from 'react-router-dom';
 import { relatorios } from '../api/client';
 import {
   TrendingUp, Users, Wallet, CalendarClock,
-  ChevronRight, ArrowUpRight, Trophy, Flame, Target
+  ChevronRight, ArrowUpRight, Trophy, Flame, Target,
+  AlertTriangle, Clock, CheckCircle2
 } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -212,6 +213,130 @@ export default function Dashboard() {
           </p>
         </Link>
       </div>
+
+      {/* Radar Resumido de Dívidas, Vencimentos & Estratégia */}
+      {dados.dividas_resumo?.possui_dividas ? (
+        <div className="card border border-[var(--line)] p-5 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-blue-600/10 text-blue-500 flex items-center justify-center shrink-0">
+                <Target size={20} />
+              </div>
+              <div>
+                <h3 className="font-extrabold text-[var(--ink)] text-base flex flex-wrap items-center gap-2">
+                  <span>Radar de Dívidas & Compromissos</span>
+                  {dados.dividas_resumo.qtd_atrasadas > 0 && (
+                    <span className="badge-red">{dados.dividas_resumo.qtd_atrasadas} atrasada(s)</span>
+                  )}
+                  {dados.dividas_resumo.qtd_vencendo_hoje > 0 && (
+                    <span className="badge-yellow">{dados.dividas_resumo.qtd_vencendo_hoje} vencendo hoje</span>
+                  )}
+                </h3>
+                <p className="text-xs text-[var(--muted)]">
+                  Falta pagar no mês: <strong className="text-[var(--ink)]">{fmt(dados.dividas_resumo.falta_pagar_mes)}</strong>
+                  {' • '}Saldo devedor total: <strong className="text-[var(--ink)]">{fmt(dados.dividas_resumo.saldo_devedor_total)}</strong>
+                </p>
+              </div>
+            </div>
+
+            <Link to="/dividas" className="btn-primary text-xs py-2 px-3.5">
+              Ver Dívidas & Estratégia <ChevronRight size={15} />
+            </Link>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
+            <Link to="/dividas" className="p-3 rounded-xl border border-[var(--line)] bg-[var(--raised)] hover-surface transition-all">
+              <div className="flex items-center justify-between text-rose-500 font-bold mb-1">
+                <span>Atrasadas</span>
+                <AlertTriangle size={14} />
+              </div>
+              <p className="text-base font-black text-[var(--ink)]">{dados.dividas_resumo.qtd_atrasadas}</p>
+              <p className="text-[11px] text-[var(--muted)]">{fmt(dados.dividas_resumo.valor_atrasadas)}</p>
+            </Link>
+
+            <Link to="/dividas" className="p-3 rounded-xl border border-[var(--line)] bg-[var(--raised)] hover-surface transition-all">
+              <div className="flex items-center justify-between text-amber-500 font-bold mb-1">
+                <span>Vencendo Hoje</span>
+                <Clock size={14} />
+              </div>
+              <p className="text-base font-black text-[var(--ink)]">{dados.dividas_resumo.qtd_vencendo_hoje}</p>
+              <p className="text-[11px] text-[var(--muted)]">{fmt(dados.dividas_resumo.valor_vencendo_hoje)}</p>
+            </Link>
+
+            <Link to="/dividas" className="p-3 rounded-xl border border-[var(--line)] bg-[var(--raised)] hover-surface transition-all">
+              <div className="flex items-center justify-between text-blue-500 font-bold mb-1">
+                <span>Próximos 15 Dias</span>
+                <CalendarClock size={14} />
+              </div>
+              <p className="text-base font-black text-[var(--ink)]">{dados.dividas_resumo.qtd_proximos_dias}</p>
+              <p className="text-[11px] text-[var(--muted)]">{fmt(dados.dividas_resumo.valor_proximos_dias)}</p>
+            </Link>
+
+            <Link to="/dividas" className="p-3 rounded-xl border border-[var(--line)] bg-[var(--raised)] hover-surface transition-all">
+              <div className="flex items-center justify-between text-emerald-500 font-bold mb-1">
+                <span>Quitadas no Mês</span>
+                <CheckCircle2 size={14} />
+              </div>
+              <p className="text-base font-black text-[var(--ink)]">{dados.dividas_resumo.qtd_quitadas_mes}</p>
+              <p className="text-[11px] text-[var(--muted)]">Pago: {fmt(dados.dividas_resumo.total_pago_mes)}</p>
+            </Link>
+          </div>
+
+          {(dados.dividas_resumo.atrasadas?.length > 0 ||
+            dados.dividas_resumo.vencendo_hoje?.length > 0 ||
+            dados.dividas_resumo.proximos_vencimentos?.length > 0) && (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5 pt-1">
+              {[
+                ...(dados.dividas_resumo.atrasadas || []),
+                ...(dados.dividas_resumo.vencendo_hoje || []),
+                ...(dados.dividas_resumo.proximos_vencimentos || []),
+              ]
+                .slice(0, 3)
+                .map((it, idx) => (
+                  <Link
+                    key={`${it.divida_id}_${it.ano}_${it.mes}_${idx}`}
+                    to="/dividas"
+                    className="flex items-center justify-between gap-3 p-3 rounded-xl border border-[var(--line)] bg-[var(--surface)] hover-surface transition-all"
+                  >
+                    <div className="min-w-0">
+                      <p className="font-bold text-sm text-[var(--ink)] truncate">
+                        {it.divida_nome}{' '}
+                        <span className="text-xs font-medium text-[var(--muted)]">({it.rotulo_parcela})</span>
+                      </p>
+                      <p className={`text-[11px] font-semibold truncate ${
+                        it.situacao === 'atrasada'
+                          ? 'text-rose-500'
+                          : it.situacao === 'vencendo_hoje'
+                            ? 'text-amber-500'
+                            : 'text-blue-500'
+                      }`}>
+                        {it.rotulo_vencimento}
+                      </p>
+                    </div>
+                    <span className="font-black text-sm text-[var(--ink)] shrink-0">{fmt(it.valor_atual)}</span>
+                  </Link>
+                ))}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="card border border-[var(--line)] p-4 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-blue-600/10 text-blue-500 flex items-center justify-center shrink-0">
+              <Target size={18} />
+            </div>
+            <div>
+              <p className="font-bold text-sm text-[var(--ink)]">Controle de Dívidas, Vencimentos & Estratégia</p>
+              <p className="text-xs text-[var(--muted)]">
+                Cadastre financiamentos (ex.: Carro 18x dia 20) e contas fixas (Condomínio dia 15, Moto dia 30) para alertas e plano de quitação.
+              </p>
+            </div>
+          </div>
+          <Link to="/dividas" className="btn-secondary text-xs py-2 px-3.5">
+            Configurar Dívidas <ChevronRight size={14} />
+          </Link>
+        </div>
+      )}
 
       {/* Gráficos Interativos */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

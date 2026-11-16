@@ -28,6 +28,7 @@ from routers import (
     pessoas,
     lancamentos,
     modulos,
+    dividas,
     relatorios,
     whatsapp,
     solicitacoes,
@@ -153,7 +154,7 @@ hub_sync_client = HubSyncClient(data_dir=DATA_DIR, db_path=DB_PATH)
 app = FastAPI(
     title="Administração Financeira API",
     description="API REST para controle e administração financeira pessoal completa",
-    version="2.2.0",
+    version="2.3.0",
     lifespan=lifespan,
 )
 
@@ -190,6 +191,7 @@ app.include_router(cartoes.router)
 app.include_router(pessoas.router)
 app.include_router(lancamentos.router)
 app.include_router(modulos.router)
+app.include_router(dividas.router)
 app.include_router(relatorios.router)
 app.include_router(whatsapp.router)
 app.include_router(solicitacoes.router)
@@ -212,6 +214,8 @@ def health():
     return {
         "status": "ok",
         "sistema": "Administração Financeira",
+        "versao": app.version,
+        "git_sha": (os.environ.get("RENDER_GIT_COMMIT") or "")[:12],
         "nuvem": cloud_sync_manager.public_health_summary(),
     }
 

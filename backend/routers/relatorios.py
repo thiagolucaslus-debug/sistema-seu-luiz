@@ -4,6 +4,7 @@ from database import get_db
 import models
 import auth
 from services.calculos import calcular_saldo_conta, calcular_saldo_pessoa_mes
+from services.dividas_service import calcular_resumo_dashboard_dividas
 from typing import Optional
 from datetime import date
 
@@ -166,6 +167,8 @@ def dashboard(mes: Optional[int] = None, ano: Optional[int] = None, db: Session 
             "qtd_parcelas": len(parcelas_fut)
         })
 
+    dividas_resumo = calcular_resumo_dashboard_dividas(db, usuario.id, mes=mes, ano=ano)
+
     return {
         "mes": mes,
         "ano": ano,
@@ -180,7 +183,8 @@ def dashboard(mes: Optional[int] = None, ano: Optional[int] = None, db: Session 
         "modulos": dados_modulos,
         "contas": dados_contas,
         "evolucao_mensal": evolucao,
-        "proximas_parcelas": proximas_parcelas
+        "proximas_parcelas": proximas_parcelas,
+        "dividas_resumo": dividas_resumo,
     }
 
 @router.get("/fechamento-mes")

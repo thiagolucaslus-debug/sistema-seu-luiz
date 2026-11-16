@@ -22,6 +22,7 @@ jobs:
       - name: Ping 24/7 e Auto-Hidratacao do Cofre Criptografado
         env:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
+          EXPECTED_GIT_SHA: ${{ github.sha }}
           RENDER_APP_URL: ${{ vars.RENDER_APP_URL || 'https://sistema-seu-luiz.onrender.com' }}
           CLOUD_VAULT_HYDRATE_SECRET: ${{ secrets.CLOUD_VAULT_HYDRATE_SECRET }}
           CLOUD_VAULT_GITHUB_TOKEN: ${{ secrets.CLOUD_VAULT_GITHUB_TOKEN }}
@@ -79,12 +80,13 @@ jobs:
                   )
                   return res_json
 
-          # Em evento de push, aguarda o Render concluir o novo deploy caso ainda esteja trocando o container
+          # Em evento de push, aguarda o Render concluir o novo deploy e hidrata o container recem-publicado
+          expected_sha = (os.environ.get("EXPECTED_GIT_SHA") or "").strip()[:12]
           if event_name == "push":
-              print("[INFO] Push detectado: acompanhando janela de deploy do Render...")
+              print(f"[INFO] Push detectado (alvo {expected_sha}): acompanhando deploy do Render...")
               time.sleep(20)
 
-          max_cycles = 16 if (event_name == "push" and has_vault_secrets) else 4
+          max_cycles = 24 if event_name == "push" else 4
           health_data = None
           last_err = None
 
@@ -94,9 +96,10 @@ jobs:
                   code, data = fetch_health()
                   elapsed_ms = int((time.monotonic() - t0) * 1000)
                   nuvem = data.get("nuvem") or {}
+                  live_sha = str(data.get("git_sha") or "").strip()[:12]
                   print(
                       f"[OK] Ciclo {cycle}/{max_cycles}: HTTP {code} em {elapsed_ms} ms -> "
-                      f"provedor={nuvem.get('provedor')}, vault={nuvem.get('vault_conectado')}, "
+                      f"sha={live_sha or 'n/a'}, provedor={nuvem.get('provedor')}, vault={nuvem.get('vault_conectado')}, "
                       f"drive={nuvem.get('drive_conectado')}, rev={nuvem.get('revisao')}"
                   )
                   health_data = data
@@ -105,15 +108,17 @@ jobs:
                       hydrate_vault()
                       _, health_data = fetch_health()
                       nuvem = health_data.get("nuvem") or {}
+                      live_sha = str(health_data.get("git_sha") or "").strip()[:12]
 
                   # Se nao for push, um unico ping + hidratacao (se necessaria) ja basta
                   if event_name != "push":
                       break
 
-                  # Em push, garante que o novo container ja subiu com suporte ao cofre e esta conectado
-                  if "vault_conectado" in nuvem and (nuvem.get("vault_conectado") or not has_vault_secrets):
-                      if cycle >= 6:
-                          break
+                  # Em push, aguarda ate o container novo assumir (quando git_sha disponivel) e estar hidratado
+                  sha_ready = (not expected_sha) or (live_sha == expected_sha)
+                  vault_ready = (not has_vault_secrets) or bool(nuvem.get("vault_conectado"))
+                  if sha_ready and vault_ready and (live_sha == expected_sha or cycle >= 14):
+                      break
                   time.sleep(15)
               except Exception as exc:
                   last_err = exc

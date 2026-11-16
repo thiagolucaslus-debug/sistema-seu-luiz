@@ -28,7 +28,7 @@ import auth as auth_module
 import database
 import models
 from routers import auth as auth_router
-from routers import cartoes, cloud, contas, lancamentos, modulos, pessoas, relatorios, solicitacoes, sync_hub
+from routers import cartoes, cloud, contas, dividas, lancamentos, modulos, pessoas, relatorios, solicitacoes, sync_hub
 from services import pdf_generator
 from services.cloud_sync import CloudSyncManager
 from services.hub_sync import HubSyncASGIMiddleware, HubSyncClient
@@ -110,6 +110,7 @@ def _make_isolated_node(
         pessoas.router,
         modulos.router,
         lancamentos.router,
+        dividas.router,
         relatorios.router,
         solicitacoes.router,
         sync_hub.router,

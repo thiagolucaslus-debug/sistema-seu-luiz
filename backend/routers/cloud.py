@@ -158,6 +158,8 @@ def _user_scoped_counts(usuario_id: int, mgr: CloudSyncManager) -> tuple[dict[st
             "pagamentos_pessoa",
             "pagamentos_fatura",
             "solicitacoes_lancamento",
+            "dividas",
+            "divida_parcelas",
         ):
             if tbl in tables:
                 cols = {r[1] for r in conn.execute(f"PRAGMA table_info({tbl})").fetchall()}

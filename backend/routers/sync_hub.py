@@ -253,6 +253,21 @@ def obter_snapshot_usuario(
         .order_by(models.SolicitacaoLancamento.id.asc())
         .all()
     )
+    dividas = (
+        db.query(models.Divida)
+        .filter(models.Divida.usuario_id == usuario.id)
+        .order_by(models.Divida.id.asc())
+        .all()
+    )
+    divida_ids = [d.id for d in dividas]
+    divida_parcelas = (
+        db.query(models.DividaParcela)
+        .filter(models.DividaParcela.divida_id.in_(divida_ids))
+        .order_by(models.DividaParcela.id.asc())
+        .all()
+        if divida_ids
+        else []
+    )
 
     uploads_dir = Path(DATA_DIR) / "uploads"
     uploads_meta = []
@@ -287,6 +302,8 @@ def obter_snapshot_usuario(
         "pagamentos_pessoa": [_row_to_dict(x) for x in pagamentos_pessoa],
         "pagamentos_fatura": [_row_to_dict(x) for x in pagamentos_fatura],
         "solicitacoes_lancamento": [_row_to_dict(x) for x in solicitacoes],
+        "dividas": [_row_to_dict(x) for x in dividas],
+        "divida_parcelas": [_row_to_dict(x) for x in divida_parcelas],
         "uploads": uploads_meta,
     }
 

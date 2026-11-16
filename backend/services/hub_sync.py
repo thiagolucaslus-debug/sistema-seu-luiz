@@ -40,6 +40,7 @@ SYNCED_PREFIXES = (
     "/pessoas",
     "/modulos",
     "/lancamentos",
+    "/dividas",
     "/relatorios",
     "/solicitacoes",
 )
@@ -298,6 +299,8 @@ class HubSyncClient:
                     "modulos": "modulo",
                     "subcategorias": "subcategoria",
                     "lancamentos": "lancamento",
+                    "dividas": "divida",
+                    "divida_parcelas": "divida_parcela",
                 }
 
                 def _rewrite_outbox_local_id(owner_email: str | None, kind: str, old_id: int, new_id: int) -> None:
@@ -313,13 +316,16 @@ class HubSyncClient:
                         "pessoa": "/pessoas/",
                         "modulo": "/modulos/",
                         "lancamento": "/lancamentos/",
+                        "divida": "/dividas/",
                     }
                     fk_fields_map = {
-                        "conta": ("conta_id", "conta_destino_id"),
+                        "conta": ("conta_id", "conta_destino_id", "conta_padrao_id"),
                         "cartao": ("cartao_id",),
                         "pessoa": ("pessoa_id",),
                         "modulo": ("modulo_id",),
                         "subcategoria": ("subcategoria_id",),
+                        "divida": ("divida_id",),
+                        "divida_parcela": ("parcela_id",),
                     }
                     for it in items:
                         if it.get("usuario") != owner_email:
@@ -388,6 +394,8 @@ class HubSyncClient:
                             ("lancamentos", "conta_destino_id"),
                             ("pagamentos_pessoa", "conta_id"),
                             ("pagamentos_fatura", "conta_id"),
+                            ("dividas", "conta_padrao_id"),
+                            ("divida_parcelas", "conta_id"),
                         ],
                         "cartoes": [
                             ("lancamentos", "cartao_id"),
@@ -402,6 +410,7 @@ class HubSyncClient:
                         "modulos": [
                             ("subcategorias", "modulo_id"),
                             ("lancamentos", "modulo_id"),
+                            ("dividas", "modulo_id"),
                         ],
                         "subcategorias": [
                             ("lancamentos", "subcategoria_id"),
@@ -409,13 +418,18 @@ class HubSyncClient:
                         "lancamentos": [
                             ("parcelas", "lancamento_id"),
                             ("solicitacoes_lancamento", "lancamento_id"),
+                            ("divida_parcelas", "lancamento_id"),
+                        ],
+                        "dividas": [
+                            ("divida_parcelas", "divida_id"),
                         ],
                     }
                     for child_tbl, fk_col in fk_updates.get(tbl, []):
-                        conn.execute(
-                            f"UPDATE {child_tbl} SET {fk_col} = ? WHERE {fk_col} = ?",
-                            (new_id, conflict_id),
-                        )
+                        if fk_col in _table_cols(child_tbl):
+                            conn.execute(
+                                f"UPDATE {child_tbl} SET {fk_col} = ? WHERE {fk_col} = ?",
+                                (new_id, conflict_id),
+                            )
                     _rewrite_outbox_local_id(owner_email, tbl_to_kind.get(tbl, ""), conflict_id, new_id)
 
                 with conn:
@@ -473,6 +487,11 @@ class HubSyncClient:
                             local_uid = int(cur.lastrowid)
 
                     # Limpa apenas a fatia anterior deste usuário (ordem filho -> pai)
+                    if _table_cols("divida_parcelas") and _table_cols("dividas"):
+                        conn.execute(
+                            "DELETE FROM divida_parcelas WHERE divida_id IN (SELECT id FROM dividas WHERE usuario_id = ?) OR usuario_id = ?",
+                            (local_uid, local_uid),
+                        )
                     conn.execute(
                         "DELETE FROM parcelas WHERE lancamento_id IN (SELECT id FROM lancamentos WHERE usuario_id = ?)",
                         (local_uid,),
@@ -482,6 +501,7 @@ class HubSyncClient:
                         (local_uid,),
                     )
                     for tbl in (
+                        "dividas",
                         "solicitacoes_lancamento",
                         "pagamentos_pessoa",
                         "pagamentos_fatura",
@@ -491,7 +511,8 @@ class HubSyncClient:
                         "cartoes",
                         "contas_bancarias",
                     ):
-                        conn.execute(f"DELETE FROM {tbl} WHERE usuario_id = ?", (local_uid,))
+                        if _table_cols(tbl):
+                            conn.execute(f"DELETE FROM {tbl} WHERE usuario_id = ?", (local_uid,))
 
                     conta_map: dict[int, int] = {}
                     cartao_map: dict[int, int] = {}
@@ -499,6 +520,7 @@ class HubSyncClient:
                     modulo_map: dict[int, int] = {}
                     subcat_map: dict[int, int] = {}
                     lanc_map: dict[int, int] = {}
+                    divida_map: dict[int, int] = {}
 
                     def _insert_rows(
                         tbl: str,
@@ -594,6 +616,27 @@ class HubSyncClient:
                             "lancamento_id": lanc_map,
                         },
                     )
+                    if _table_cols("dividas"):
+                        _insert_rows(
+                            "dividas",
+                            snapshot.get("dividas") or [],
+                            divida_map,
+                            fk_rewrites={
+                                "conta_padrao_id": conta_map,
+                                "modulo_id": modulo_map,
+                            },
+                        )
+                    if _table_cols("divida_parcelas"):
+                        _insert_rows(
+                            "divida_parcelas",
+                            snapshot.get("divida_parcelas") or [],
+                            None,
+                            fk_rewrites={
+                                "divida_id": divida_map,
+                                "conta_id": conta_map,
+                                "lancamento_id": lanc_map,
+                            },
+                        )
 
                 final_row = conn.execute(
                     "SELECT id, nome, email, senha_hash, logo_path, sync_rev FROM usuarios WHERE id = ?",
@@ -661,6 +704,8 @@ class HubSyncClient:
             "modulo": {},
             "subcategoria": {},
             "lancamento": {},
+            "divida": {},
+            "divida_parcela": {},
         }
         remaining_for_user: list[dict[str, Any]] = []
         current_tok = render_token
@@ -680,6 +725,7 @@ class HubSyncClient:
                 ("pessoa", "/pessoas/"),
                 ("modulo", "/modulos/"),
                 ("lancamento", "/lancamentos/"),
+                ("divida", "/dividas/"),
             ):
                 if path.startswith(prefix):
                     rest = path[len(prefix) :]
@@ -696,10 +742,13 @@ class HubSyncClient:
                         for fk_field, kind in (
                             ("conta_id", "conta"),
                             ("conta_destino_id", "conta"),
+                            ("conta_padrao_id", "conta"),
                             ("cartao_id", "cartao"),
                             ("pessoa_id", "pessoa"),
                             ("modulo_id", "modulo"),
                             ("subcategoria_id", "subcategoria"),
+                            ("divida_id", "divida"),
+                            ("parcela_id", "divida_parcela"),
                         ):
                             val = j_obj.get(fk_field)
                             if isinstance(val, int) and val in id_remaps[kind]:
@@ -1016,6 +1065,8 @@ def _infer_entity_kind(method: str, path: str) -> str | None:
         "/modulos/subcategorias/": "subcategoria",
         "/lancamentos/": "lancamento",
         "/lancamentos": "lancamento",
+        "/dividas/": "divida",
+        "/dividas": "divida",
     }
     return mapping.get(path)
 
