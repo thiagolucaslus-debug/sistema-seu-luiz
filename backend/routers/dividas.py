@@ -578,6 +578,7 @@ def estornar_obrigacao_divida(
     if (
         divida.tipo_compromisso == "fixa"
         and round(float(parcela.valor_atual), 2) == round(float(divida.valor_parcela), 2)
+        and not (parcela.observacao or "").strip()
     ):
         db.delete(parcela)
     else:

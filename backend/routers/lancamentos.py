@@ -259,6 +259,7 @@ def cancelar_lancamento(id: int, db: Session = Depends(get_db), usuario = Depend
             pd.divida
             and pd.divida.tipo_compromisso == "fixa"
             and round(float(pd.valor_atual), 2) == round(float(pd.divida.valor_parcela), 2)
+            and not (pd.observacao or "").strip()
         ):
             db.delete(pd)
         else:

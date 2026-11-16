@@ -7,6 +7,7 @@ import {
 import {
   formatBRL as fmt,
   describeSituacaoVencimento,
+  calcularEstimativaAntecipacao,
 } from '../components/dividasFormat';
 import {
   Target,
@@ -153,7 +154,10 @@ function ModalFormDivida({ dividaEdit, contas, modulos, mesAtual, anoAtual, onCl
       dividaEdit?.conta_padrao_id && contas.some((c) => c.id === dividaEdit.conta_padrao_id)
         ? String(dividaEdit.conta_padrao_id)
         : '',
-    modulo_id: dividaEdit?.modulo_id ? String(dividaEdit.modulo_id) : '',
+    modulo_id:
+      dividaEdit?.modulo_id && modulos.some((m) => m.id === dividaEdit.modulo_id)
+        ? String(dividaEdit.modulo_id)
+        : '',
     cor: dividaEdit?.cor || '#2563EB',
     observacoes: dividaEdit?.observacoes || '',
   });
@@ -755,7 +759,12 @@ function ModalAnteciparParcelas({ divida, contas, qtdInicial = 1, onClose, onSav
   const [qtd, setQtd] = useState(Math.min(maxQtd, Math.max(1, Number(qtdInicial) || 1)));
   const [ordem, setOrdem] = useState('ultimas');
   const [modoValor, setModoValor] = useState('percentual'); // 'percentual' | 'valor_fechado'
-  const [descontoPct, setDescontoPct] = useState(String(divida.desconto_antecipacao_pct || 0));
+  const [descontoPct, setDescontoPct] = useState(() => {
+    const pctCad = Number(divida.desconto_antecipacao_pct || 0);
+    if (pctCad > 0) return String(pctCad);
+    if (Number(divida.taxa_juros_mensal || 0) > 0) return '';
+    return '0';
+  });
   const [valorFechado, setValorFechado] = useState('');
   const [contaId, setContaId] = useState(
     divida.conta_padrao_id && contas.some((c) => c.id === divida.conta_padrao_id)
@@ -771,26 +780,18 @@ function ModalAnteciparParcelas({ divida, contas, qtdInicial = 1, onClose, onSav
     return ordem === 'ultimas' ? pendentes.slice(-n) : pendentes.slice(0, n);
   }, [pendentes, qtd, ordem, maxQtd]);
 
-  const somaNominal = useMemo(
-    () => selecionadas.reduce((acc, p) => acc + Number(p.valor_atual || 0), 0),
-    [selecionadas]
+  const estimativa = useMemo(
+    () =>
+      calcularEstimativaAntecipacao(selecionadas, {
+        modoValor,
+        valorFechado,
+        descontoPct,
+        taxaJurosMensal: divida.taxa_juros_mensal,
+        dataPagamentoISO: dataPagamento,
+      }),
+    [selecionadas, modoValor, valorFechado, descontoPct, divida.taxa_juros_mensal, dataPagamento]
   );
-
-  const estimativa = useMemo(() => {
-    if (modoValor === 'valor_fechado') {
-      const vf = parseFloat(valorFechado) || somaNominal;
-      return {
-        totalPagar: vf,
-        economia: Math.max(0, somaNominal - vf),
-      };
-    }
-    const pct = Math.min(95, Math.max(0, parseFloat(descontoPct) || 0));
-    if (pct > 0) {
-      const pago = Number((somaNominal * (1 - pct / 100)).toFixed(2));
-      return { totalPagar: pago, economia: Math.max(0, somaNominal - pago) };
-    }
-    return { totalPagar: somaNominal, economia: 0 };
-  }, [modoValor, valorFechado, descontoPct, somaNominal]);
+  const somaNominal = estimativa.somaNominal;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -811,6 +812,8 @@ function ModalAnteciparParcelas({ divida, contas, qtdInicial = 1, onClose, onSav
           return;
         }
         payload.valor_total_pago = vf;
+      } else if (String(descontoPct ?? '').trim() === '') {
+        payload.desconto_pct = null;
       } else {
         payload.desconto_pct = Math.max(0, parseFloat(descontoPct) || 0);
       }
@@ -907,9 +910,19 @@ function ModalAnteciparParcelas({ divida, contas, qtdInicial = 1, onClose, onSav
                   min="0"
                   max="95"
                   className="input font-bold"
+                  placeholder={
+                    Number(divida.taxa_juros_mensal || 0) > 0
+                      ? `Automático CDC (${divida.taxa_juros_mensal}% a.m.) ou digite 0`
+                      : '0.00'
+                  }
                   value={descontoPct}
                   onChange={(e) => setDescontoPct(e.target.value)}
                 />
+                {estimativa.usaCdcAutomatico && (
+                  <p className="text-[11px] text-blue-600 font-medium mt-1">
+                    Calculado pelo valor presente CDC ({divida.taxa_juros_mensal}% a.m.). Digite 0 caso não haja desconto.
+                  </p>
+                )}
               </div>
             ) : (
               <div>
@@ -1138,6 +1151,15 @@ export default function Dividas() {
       console.error('Erro ao simular quitação:', err);
     } finally {
       setSimulando(false);
+    }
+  };
+
+  const selecionarModoEstrategia = (novoModo) => {
+    setModoEstrategia(novoModo);
+    const nextSim = { ...simForm, estrategia: novoModo };
+    setSimForm(nextSim);
+    if (abaAtiva === 'estrategia' && painel?.dividas?.some((d) => d.tipo_compromisso === 'parcelada')) {
+      executarSimulacao(nextSim);
     }
   };
 
@@ -1700,7 +1722,7 @@ export default function Dividas() {
                 <div className="flex bg-[var(--canvas)] p-1 rounded-xl border border-[var(--line)] gap-1 text-xs">
                   <button
                     type="button"
-                    onClick={() => setModoEstrategia('avalanche')}
+                    onClick={() => selecionarModoEstrategia('avalanche')}
                     className={`px-3 py-2 rounded-lg font-bold flex items-center gap-1.5 transition-all ${
                       modoEstrategia === 'avalanche'
                         ? 'bg-blue-600 text-white shadow-sm'
@@ -1711,7 +1733,7 @@ export default function Dividas() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setModoEstrategia('bola_de_neve')}
+                    onClick={() => selecionarModoEstrategia('bola_de_neve')}
                     className={`px-3 py-2 rounded-lg font-bold flex items-center gap-1.5 transition-all ${
                       modoEstrategia === 'bola_de_neve'
                         ? 'bg-blue-600 text-white shadow-sm'
@@ -1822,7 +1844,19 @@ export default function Dividas() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 p-4 rounded-2xl bg-[var(--raised)] border border-[var(--line)]">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 p-4 rounded-2xl bg-[var(--raised)] border border-[var(--line)]">
+                <div>
+                  <label className="label">Método da Estratégia</label>
+                  <select
+                    className="input font-semibold"
+                    value={simForm.estrategia}
+                    onChange={(e) => selecionarModoEstrategia(e.target.value)}
+                  >
+                    <option value="avalanche">Avalanche / Maior Alívio</option>
+                    <option value="bola_de_neve">Bola de Neve (Menor Saldo)</option>
+                  </select>
+                </div>
+
                 <div>
                   <label className="label">Aporte Pontual (Ex.: 13º / Reserva)</label>
                   <input

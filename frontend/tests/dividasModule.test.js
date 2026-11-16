@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import {
+  calcularEstimativaAntecipacao,
   clampDueDateISO,
   describeSituacaoVencimento,
   formatBRL,
@@ -72,7 +73,56 @@ test('registra o módulo Dívidas & Estratégia completo no menu, rota, Dashboar
     'Maior Alívio Mensal / Avalanche',
     'Simulador de Antecipação & Aporte Extra',
     'Debitar de qual Conta Bancária',
+    'selecionarModoEstrategia',
+    'Método da Estratégia',
   ]) {
     assert.match(page, new RegExp(label));
   }
+});
+
+test('calcula estimativa de antecipação em modo percentual, valor fechado e CDC automático', () => {
+  const selecionadas = [
+    { numero: 17, mes: 3, ano: 2028, valor_atual: 1500 },
+    { numero: 18, mes: 4, ano: 2028, valor_atual: 1500 },
+  ];
+
+  // 1) Desconto percentual explícito (5% sobre 2x 1500 = 2850, economia 150)
+  const resPct = calcularEstimativaAntecipacao(selecionadas, {
+    modoValor: 'percentual',
+    descontoPct: '5',
+    taxaJurosMensal: 1.8,
+    dataPagamentoISO: '2026-11-16',
+  });
+  assert.equal(resPct.totalPagar, 2850);
+  assert.equal(resPct.economia, 150);
+  assert.equal(resPct.usaCdcAutomatico, false);
+
+  // 2) CDC automático quando descontoPct está em branco e há taxa_juros_mensal > 0
+  const resCdc = calcularEstimativaAntecipacao(selecionadas, {
+    modoValor: 'percentual',
+    descontoPct: '',
+    taxaJurosMensal: 1.8,
+    dataPagamentoISO: '2026-11-16',
+  });
+  assert.equal(resCdc.usaCdcAutomatico, true);
+  assert.ok(resCdc.totalPagar < 3000 && resCdc.economia > 600);
+
+  // 3) Digitar 0 explícito desativa desconto (paga valor nominal cheio)
+  const resZero = calcularEstimativaAntecipacao(selecionadas, {
+    modoValor: 'percentual',
+    descontoPct: '0',
+    taxaJurosMensal: 1.8,
+    dataPagamentoISO: '2026-11-16',
+  });
+  assert.equal(resZero.totalPagar, 3000);
+  assert.equal(resZero.economia, 0);
+  assert.equal(resZero.usaCdcAutomatico, false);
+
+  // 4) Valor fechado do boleto
+  const resBoleto = calcularEstimativaAntecipacao(selecionadas, {
+    modoValor: 'valor_fechado',
+    valorFechado: '2620.50',
+  });
+  assert.equal(resBoleto.totalPagar, 2620.5);
+  assert.equal(resBoleto.economia, 379.5);
 });

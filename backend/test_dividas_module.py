@@ -517,3 +517,209 @@ def test_casos_de_borda_validacao_cross_tenant_e_colisao_pk_offline_dividas(tmp_
     assert divs_u3[0]["parcelas_pagas"] == 1
     assert pc["client"].get("/contas/", headers=hdr_u3_synced).json()[0]["saldo_atual"] == 2500.0
 
+
+def test_auditoria_adversarial_simulador_previsao_termino_parcela_id_offline_e_centavos(tmp_path: Path):
+    hub = _make_isolated_node(tmp_path, "hub_adv", desktop_mode=False)
+    online = {"up": True}
+
+    def hub_transport(method: str, url: str, headers=None, data=None, timeout=12.0):
+        if not online["up"]:
+            raise OSError("Offline")
+        parts = urlsplit(url)
+        pq = f"{parts.path}?{parts.query}" if parts.query else parts.path
+        resp = hub["client"].request(method, pq, headers=headers or {}, content=data)
+        return resp.status_code, dict(resp.headers), resp.content
+
+    pc = _make_isolated_node(tmp_path, "pc_adv", desktop_mode=True, hub_transport=hub_transport)
+
+    # 1. Cria dados prévios no Hub de outro usuário para forçar IDs diferentes entre PC offline e Hub
+    hdr_other = _register_and_headers(hub["client"], "Outro", "outro_adv")
+    hub["client"].post(
+        "/dividas/",
+        headers=hdr_other,
+        json={
+            "nome": "Divida Outro",
+            "tipo_compromisso": "parcelada",
+            "valor_parcela": 1000.0,
+            "total_parcelas": 10,
+            "mes_inicio": 11,
+            "ano_inicio": 2026,
+        },
+    )
+
+    # 2. Usuário principal registra no PC, desconecta, cria dívida offline, roda simulador (NÃO pode ir para outbox!),
+    # e paga usando EXCLUSIVAMENTE `parcela_id` (sem enviar numero/mes/ano)
+    hdr_pc = _register_and_headers(pc["client"], "Luiz Adv", "luiz_adv")
+    online["up"] = False
+
+    conta_off = pc["client"].post(
+        "/contas/",
+        headers=hdr_pc,
+        json={"nome": "Caixa Adv", "banco": "Caixa", "saldo_inicial": 5000.0},
+    ).json()
+
+    div_off = pc["client"].post(
+        "/dividas/",
+        headers=hdr_pc,
+        json={
+            "nome": "Carro ParcelaID Puro",
+            "tipo_compromisso": "parcelada",
+            "valor_parcela": 500.0,
+            "dia_vencimento": 20,
+            "total_parcelas": 6,
+            "mes_inicio": 11,
+            "ano_inicio": 2026,
+        },
+    ).json()
+    assert div_off["previsao_termino"] == "Abr/2027"
+    local_pid_2 = next(p["parcela_id"] for p in div_off["parcelas"] if p["numero"] == 2)
+
+    # Simular offline deve funcionar localmente sem poluir offline_outbox.json
+    outbox_antes_sim = len(pc["hub_client"]._load_outbox())
+    r_sim_off = pc["client"].post(
+        "/dividas/simular",
+        headers=hdr_pc,
+        json={"aporte_unico": 500.0, "aporte_mensal_extra": 100.0, "estrategia": "bola_de_neve"},
+    )
+    assert r_sim_off.status_code == 200
+    assert len(pc["hub_client"]._load_outbox()) == outbox_antes_sim
+
+    # Paga parcela #2 enviando SOMENTE parcela_id (testa remapeamento de local_parcelas -> Hub)
+    r_pag_pid = pc["client"].post(
+        f"/dividas/{div_off['id']}/pagar",
+        headers=hdr_pc,
+        json={"parcela_id": local_pid_2, "valor_pago": 500.0, "conta_id": conta_off["id"]},
+    )
+    assert r_pag_pid.status_code == 200
+
+    # Força colisão de PK local (outro_adv loga no PC quando online) antes de luiz_adv drenar outbox
+    online["up"] = True
+    pc["hub_client"]._offline_until = 0.0
+    assert pc["client"].post("/auth/login", json={"usuario": "outro_adv", "senha": "SenhaForte123"}).status_code == 200
+
+    # Agora luiz_adv sincroniza -> parcela #2 deve estar paga no Hub com saldo exato R$ 4.500,00!
+    r_login_adv = pc["client"].post("/auth/login", json={"usuario": "luiz_adv", "senha": "SenhaForte123"})
+    assert r_login_adv.status_code == 200
+    hdr_pc_sync = {"Authorization": f"Bearer {r_login_adv.json()['access_token']}"}
+    assert pc["hub_client"]._load_outbox() == []
+
+    divs_sync = pc["client"].get("/dividas/", headers=hdr_pc_sync).json()
+    assert len(divs_sync) == 1
+    d_sync = divs_sync[0]
+    p2_sync = next(p for p in d_sync["parcelas"] if p["numero"] == 2)
+    assert p2_sync["status"] == "pago"
+    assert pc["client"].get("/contas/", headers=hdr_pc_sync).json()[0]["saldo_atual"] == 4500.0
+
+    # 3. Antecipação com valor fechado de centavos ímpares (3 parcelas finais por R$ 1.000,00 -> 333.33 + 333.33 + 333.34)
+    # e verificação de encurtamento imediato de `previsao_termino`!
+    conta_sync_id = pc["client"].get("/contas/", headers=hdr_pc_sync).json()[0]["id"]
+    r_ant_odd = pc["client"].post(
+        f"/dividas/{d_sync['id']}/antecipar",
+        headers=hdr_pc_sync,
+        json={
+            "quantidade_parcelas": 3,
+            "ordem": "ultimas",
+            "valor_total_pago": 1000.0,
+            "conta_id": conta_sync_id,
+        },
+    )
+    assert r_ant_odd.status_code == 200, r_ant_odd.text
+    assert r_ant_odd.json()["valor_total_pago"] == 1000.0
+    assert pc["client"].get("/contas/", headers=hdr_pc_sync).json()[0]["saldo_atual"] == 3500.0
+
+    d_after_ant = pc["client"].get("/dividas/", headers=hdr_pc_sync).json()[0]
+    # Eram 6 parcelas (Nov/2026..Abr/2027); pagou #2 e antecipou #4, #5, #6 -> última pendente agora é #3 (Jan/2027)!
+    assert d_after_ant["previsao_termino"] == "Jan/2027"
+
+    # 4. Conta fixa com observação customizada preserva a observação após pagar e estornar
+    cond_fixa = pc["client"].post(
+        "/dividas/",
+        headers=hdr_pc_sync,
+        json={
+            "nome": "Condomínio Notas",
+            "tipo_compromisso": "fixa",
+            "valor_parcela": 800.0,
+            "dia_vencimento": 15,
+            "mes_inicio": 11,
+            "ano_inicio": 2026,
+        },
+    ).json()
+    assert pc["client"].put(
+        f"/dividas/{cond_fixa['id']}/ajuste-mes",
+        headers=hdr_pc_sync,
+        json={"mes": 11, "ano": 2026, "novo_valor": 800.0, "observacao": "Boleto administradora nova"},
+    ).status_code == 200
+    assert pc["client"].post(
+        f"/dividas/{cond_fixa['id']}/pagar",
+        headers=hdr_pc_sync,
+        json={"mes": 11, "ano": 2026, "valor_pago": 800.0, "conta_id": conta_sync_id},
+    ).status_code == 200
+    assert pc["client"].post(
+        f"/dividas/{cond_fixa['id']}/estornar",
+        headers=hdr_pc_sync,
+        json={"mes": 11, "ano": 2026},
+    ).status_code == 200
+    painel_nov = pc["client"].get("/dividas/painel?mes=11&ano=2026", headers=hdr_pc_sync).json()
+    oc_cond = next(x for x in painel_nov["agenda_mes"] if x["divida_id"] == cond_fixa["id"])
+    assert oc_cond["status"] == "pendente"
+    assert oc_cond["observacao"] == "Boleto administradora nova"
+    assert pc["client"].get("/contas/", headers=hdr_pc_sync).json()[0]["saldo_atual"] == 3500.0
+
+    # 5. Simulador sem folga fantasma quando uma dívida já pagou a parcela do mês atual
+    from sqlalchemy.orm import sessionmaker
+
+    with sessionmaker(bind=hub["engine"])() as db_s:
+        u_tmp = models.Usuario(nome="SimTest", email="sim_pure", senha_hash="x")
+        db_s.add(u_tmp)
+        db_s.flush()
+        # Dívida A: 4x de 1000 começando em Nov/2026 (pendentes: Nov, Dez, Jan, Fev)
+        da = models.Divida(
+            usuario_id=u_tmp.id,
+            nome="Dívida A",
+            tipo_compromisso="parcelada",
+            valor_parcela=1000.0,
+            dia_vencimento=20,
+            total_parcelas=4,
+            mes_inicio=11,
+            ano_inicio=2026,
+            ativa=True,
+        )
+        # Dívida B: 2x de 500 onde Nov/2026 JÁ FOI PAGA e Dez/2026 ainda está pendente!
+        db_obj = models.Divida(
+            usuario_id=u_tmp.id,
+            nome="Dívida B",
+            tipo_compromisso="parcelada",
+            valor_parcela=500.0,
+            dia_vencimento=10,
+            total_parcelas=2,
+            parcelas_pagas_anteriores=1,
+            mes_inicio=12,
+            ano_inicio=2026,
+            ativa=True,
+        )
+        db_s.add_all([da, db_obj])
+        db_s.flush()
+        from services.dividas_service import gerar_parcelas_iniciais_divida
+
+        for p in gerar_parcelas_iniciais_divida(da) + gerar_parcelas_iniciais_divida(db_obj):
+            db_s.add(p)
+        db_s.commit()
+        db_s.refresh(da)
+        db_s.refresh(db_obj)
+
+        # Em Nov/2026, Dívida B já pagou Nov/2026 (não está quitada: falta Dez/2026).
+        # Sem aporte extra (aporte_unico=0, aporte_mensal_extra=0), em Nov e Dez não há folga cascata;
+        # somente em Jan/2027 (após Dívida B quitar em Dez/2026) os R$ 500 liberados abatem metade de Fev/2027!
+        res_sim = simular_plano_quitacao(
+            [da, db_obj],
+            ref_date=date(2026, 11, 16),
+            aporte_unico=0.0,
+            aporte_mensal_extra=0.0,
+            estrategia="bola_de_neve",
+            reinvestir_alivio=True,
+        )
+        assert res_sim["custo_total_acelerado"] == 4500.0
+        # Fev/2027 ainda precisa de R$ 500 restantes em Fev/2027, logo termina em Fev/2027 (4 meses, não 3!)
+        assert res_sim["data_quitacao_acelerada"] == "Fev/2027"
+
+

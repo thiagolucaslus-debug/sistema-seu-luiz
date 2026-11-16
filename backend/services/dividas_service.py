@@ -354,7 +354,11 @@ def serializar_divida_completa(
             if prox_p and divida.ativa
             else None
         )
-        ult_p = parcelas_ordenadas[-1] if parcelas_ordenadas else None
+        ult_p = (
+            pendentes[-1]
+            if pendentes
+            else (parcelas_ordenadas[-1] if parcelas_ordenadas else None)
+        )
         previsao_termino = format_mes_ano(ult_p.mes, ult_p.ano) if ult_p else None
         parcelas_serializadas = [
             _serializar_ocorrencia(
@@ -774,6 +778,11 @@ def simular_plano_quitacao(
                 "valor_parcela": round(float(d.valor_parcela), 2),
                 "taxa_juros": float(d.taxa_juros_mensal or 0.0),
                 "desconto_pct": float(d.desconto_antecipacao_pct or 0.0),
+                "meses_pagos_reais": {
+                    (p.ano, p.mes)
+                    for p in d.parcelas
+                    if p.status == "pago" and not p.antecipada
+                },
                 "pendentes": [
                     {
                         "numero": p.numero,
@@ -885,19 +894,23 @@ def simular_plano_quitacao(
                     if not alvo["pendentes"]:
                         alvo["quitada_em"] = (ref_date.year, ref_date.month)
                 else:
-                    # Abate parcialmente o saldo da última parcela sem perdê-la
-                    cand["valor"] = round(max(0.01, cand["valor"] - caixa_aporte_unico), 2)
-                    custo_total_acelerado = round(custo_total_acelerado + caixa_aporte_unico, 2)
-                    alvo["total_pago_sim"] = round(alvo["total_pago_sim"] + caixa_aporte_unico, 2)
+                    # Abate parcialmente o saldo da última parcela respeitando desconto proporcional
+                    fator = cand["valor"] / custo_c if custo_c > 0 else 1.0
+                    reducao_nominal = round(min(cand["valor"] - 0.01, caixa_aporte_unico * fator), 2)
+                    if reducao_nominal > 0:
+                        econ_parcial = round(max(0.0, reducao_nominal - caixa_aporte_unico), 2)
+                        cand["valor"] = round(cand["valor"] - reducao_nominal, 2)
+                        custo_total_acelerado = round(custo_total_acelerado + caixa_aporte_unico, 2)
+                        economia_total = round(economia_total + econ_parcial, 2)
+                        alvo["total_pago_sim"] = round(alvo["total_pago_sim"] + caixa_aporte_unico, 2)
+                        alvo["economia_sim"] = round(alvo["economia_sim"] + econ_parcial, 2)
                     caixa_aporte_unico = 0.0
                     break
-
-    orcamento_base_parcelas = sum(e["valor_parcela"] for e in sim_estados)
 
     while any(e["pendentes"] for e in sim_estados) and passo_mes < 600:
         ano_cur, mes_cur = add_months(ref_date.year, ref_date.month, passo_mes)
         ultimo_ym_pago = (ano_cur, mes_cur)
-        pago_obrigatorio_mes = 0.0
+        pagou_no_mes: set[int] = set()
 
         # 2a. Paga parcelas vencidas ou do mês corrente
         for e in sim_estados:
@@ -905,7 +918,7 @@ def simular_plano_quitacao(
             for item_p in e["pendentes"]:
                 if months_between(ano_cur, mes_cur, item_p["ano"], item_p["mes"]) <= 0:
                     val_p = item_p["valor"]
-                    pago_obrigatorio_mes = round(pago_obrigatorio_mes + val_p, 2)
+                    pagou_no_mes.add(e["id"])
                     custo_total_acelerado = round(custo_total_acelerado + val_p, 2)
                     e["total_pago_sim"] = round(e["total_pago_sim"] + val_p, 2)
                 else:
@@ -914,9 +927,18 @@ def simular_plano_quitacao(
             if not e["pendentes"] and e["quitada_em"] is None:
                 e["quitada_em"] = (ano_cur, mes_cur)
 
-        # 2b. Aplica aporte mensal extra + alívio de dívidas já quitadas (efeito cascata)
+        # 2b. Aplica aporte mensal extra + alívio real somente de dívidas já quitadas (efeito cascata)
         folga_cascata = (
-            max(0.0, round(orcamento_base_parcelas - pago_obrigatorio_mes, 2))
+            round(
+                sum(
+                    e["valor_parcela"]
+                    for e in sim_estados
+                    if not e["pendentes"]
+                    and e["id"] not in pagou_no_mes
+                    and (ano_cur, mes_cur) not in e["meses_pagos_reais"]
+                ),
+                2,
+            )
             if reinvestir_alivio
             else 0.0
         )

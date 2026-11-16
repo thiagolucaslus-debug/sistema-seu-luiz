@@ -34,6 +34,7 @@ from routers.sync_hub import compute_sync_proof
 from services.cloud_sync import DEFAULT_RENDER_URL, _atomic_write_bytes, _atomic_write_json, _read_json_safe
 
 SYNCED_AUTH_MUTATIONS = {"/auth/senha", "/auth/perfil", "/auth/perfil/foto"}
+READONLY_POST_PATHS = {"/dividas/simular"}
 SYNCED_PREFIXES = (
     "/contas",
     "/cartoes",
@@ -147,23 +148,25 @@ class HubSyncClient:
         raw_body: bytes,
         local_created_id: int | None = None,
         entity_kind: str | None = None,
+        local_parcelas: list[dict[str, Any]] | None = None,
     ) -> None:
         with self._lock:
             items = self._load_outbox()
-            items.append(
-                {
-                    "id": secrets.token_hex(8),
-                    "usuario": usuario.strip().lower(),
-                    "method": method.upper(),
-                    "path": path,
-                    "query": query,
-                    "content_type": content_type,
-                    "body_b64": base64.b64encode(raw_body).decode("ascii"),
-                    "local_created_id": local_created_id,
-                    "entity_kind": entity_kind,
-                    "created_at": time.time(),
-                }
-            )
+            entry: dict[str, Any] = {
+                "id": secrets.token_hex(8),
+                "usuario": usuario.strip().lower(),
+                "method": method.upper(),
+                "path": path,
+                "query": query,
+                "content_type": content_type,
+                "body_b64": base64.b64encode(raw_body).decode("ascii"),
+                "local_created_id": local_created_id,
+                "entity_kind": entity_kind,
+                "created_at": time.time(),
+            }
+            if local_parcelas:
+                entry["local_parcelas"] = local_parcelas
+            items.append(entry)
             self._save_outbox(items)
 
     def _request_hub(
@@ -333,6 +336,11 @@ class HubSyncClient:
                         if it.get("entity_kind") == kind and it.get("local_created_id") == old_id:
                             it["local_created_id"] = new_id
                             changed = True
+                        if kind == "divida_parcela" and isinstance(it.get("local_parcelas"), list):
+                            for lp in it["local_parcelas"]:
+                                if isinstance(lp, dict) and lp.get("parcela_id") == old_id:
+                                    lp["parcela_id"] = new_id
+                                    changed = True
                         pfx = prefix_map.get(kind)
                         p_str = str(it.get("path") or "")
                         if pfx and p_str.startswith(pfx):
@@ -785,13 +793,44 @@ class HubSyncClient:
             if 200 <= code < 300:
                 loc_id = item.get("local_created_id")
                 ekind = item.get("entity_kind")
-                if loc_id is not None and ekind in id_remaps:
-                    try:
-                        r_json = json.loads(resp_body.decode("utf-8"))
-                        if isinstance(r_json, dict) and r_json.get("id") is not None:
-                            id_remaps[ekind][int(loc_id)] = int(r_json["id"])
-                    except Exception:
-                        pass
+                try:
+                    r_json = json.loads(resp_body.decode("utf-8"))
+                except Exception:
+                    r_json = None
+                if isinstance(r_json, dict):
+                    if loc_id is not None and ekind in id_remaps:
+                        rem_id = (
+                            r_json.get("parcela_id")
+                            if ekind == "divida_parcela"
+                            else r_json.get("id")
+                        )
+                        if rem_id is not None:
+                            id_remaps[ekind][int(loc_id)] = int(rem_id)
+                    if (
+                        ekind == "divida"
+                        and isinstance(item.get("local_parcelas"), list)
+                        and isinstance(r_json.get("parcelas"), list)
+                    ):
+                        remote_by_key = {
+                            (int(rp["numero"]), int(rp["mes"]), int(rp["ano"])): int(rp["parcela_id"])
+                            for rp in r_json["parcelas"]
+                            if isinstance(rp, dict)
+                            and rp.get("parcela_id") is not None
+                            and rp.get("numero") is not None
+                            and rp.get("mes") is not None
+                            and rp.get("ano") is not None
+                        }
+                        for lp in item["local_parcelas"]:
+                            if (
+                                isinstance(lp, dict)
+                                and lp.get("parcela_id") is not None
+                                and lp.get("numero") is not None
+                                and lp.get("mes") is not None
+                                and lp.get("ano") is not None
+                            ):
+                                k_p = (int(lp["numero"]), int(lp["mes"]), int(lp["ano"]))
+                                if k_p in remote_by_key:
+                                    id_remaps["divida_parcela"][int(lp["parcela_id"])] = remote_by_key[k_p]
 
         with self._lock:
             self._save_outbox(other_items + remaining_for_user)
@@ -1052,6 +1091,9 @@ def _decode_bearer_local_user(hub_client: HubSyncClient, headers_list: list[tupl
 def _infer_entity_kind(method: str, path: str) -> str | None:
     if method.upper() != "POST":
         return None
+    clean_path = path.rstrip("/")
+    if clean_path.startswith("/dividas/") and clean_path.endswith("/pagar"):
+        return "divida_parcela"
     mapping = {
         "/contas/": "conta",
         "/contas": "conta",
@@ -1163,7 +1205,9 @@ class HubSyncASGIMiddleware:
             await self.app(scope, receive, send)
             return
 
-        if method in ("GET", "HEAD"):
+        if method in ("GET", "HEAD") or (
+            method == "POST" and path.rstrip("/") in READONLY_POST_PATHS
+        ):
             await asyncio.to_thread(self.hub_client.sync_user_if_needed, local_user)
             await self.app(scope, receive, send)
             return
@@ -1210,12 +1254,27 @@ class HubSyncASGIMiddleware:
 
                 if 200 <= captured_status < 300 and path != "/auth/senha":
                     created_id: int | None = None
+                    local_parcelas: list[dict[str, Any]] | None = None
                     ekind = _infer_entity_kind(method, path)
                     if ekind:
                         try:
                             out_json = json.loads(b"".join(captured_chunks).decode("utf-8"))
-                            if isinstance(out_json, dict) and out_json.get("id") is not None:
-                                created_id = int(out_json["id"])
+                            if isinstance(out_json, dict):
+                                if ekind == "divida_parcela" and out_json.get("parcela_id") is not None:
+                                    created_id = int(out_json["parcela_id"])
+                                elif out_json.get("id") is not None:
+                                    created_id = int(out_json["id"])
+                                if ekind == "divida" and isinstance(out_json.get("parcelas"), list):
+                                    local_parcelas = [
+                                        {
+                                            "parcela_id": int(p["parcela_id"]),
+                                            "numero": p.get("numero"),
+                                            "mes": p.get("mes"),
+                                            "ano": p.get("ano"),
+                                        }
+                                        for p in out_json["parcelas"]
+                                        if isinstance(p, dict) and p.get("parcela_id") is not None
+                                    ]
                         except Exception:
                             pass
                     self.hub_client.enqueue_offline_mutation(
@@ -1227,6 +1286,7 @@ class HubSyncASGIMiddleware:
                         raw_body=raw_body,
                         local_created_id=created_id,
                         entity_kind=ekind,
+                        local_parcelas=local_parcelas,
                     )
                 return
 
