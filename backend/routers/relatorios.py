@@ -28,6 +28,7 @@ def dashboard(mes: Optional[int] = None, ano: Optional[int] = None, db: Session 
             models.Lancamento.cartao_id == c.id,
             models.Parcela.mes == mes,
             models.Parcela.ano == ano,
+            models.Parcela.status != "cancelado",
             models.Lancamento.cancelado == False
         ).all()
         tot = round(sum(p.valor for p in parcelas), 2)
@@ -88,6 +89,7 @@ def dashboard(mes: Optional[int] = None, ano: Optional[int] = None, db: Session 
             models.Lancamento.modulo_id == m.id,
             models.Parcela.mes == mes,
             models.Parcela.ano == ano,
+            models.Parcela.status != "cancelado",
             models.Lancamento.cancelado == False
         ).all()
         tot = round(sum(p.valor for p in parcelas), 2)
@@ -130,6 +132,7 @@ def dashboard(mes: Optional[int] = None, ano: Optional[int] = None, db: Session 
             models.Lancamento.usuario_id == usuario.id,
             models.Parcela.mes == m,
             models.Parcela.ano == a,
+            models.Parcela.status != "cancelado",
             models.Lancamento.cancelado == False
         ).all()
         tot_m = round(sum(p.valor for p in parcelas_m), 2)
@@ -212,10 +215,16 @@ def fechamento_consolidado_mes(
             models.Lancamento.cartao_id == c.id,
             models.Parcela.mes == mes,
             models.Parcela.ano == ano,
+            models.Parcela.status != "cancelado",
             models.Lancamento.cancelado == False
         ).all()
         tot = round(sum(p.valor for p in parcelas), 2)
         pago = round(sum(p.valor for p in parcelas if p.status == "pago"), 2)
+        pag_fatura = db.query(models.PagamentoFatura).filter(
+            models.PagamentoFatura.cartao_id == c.id,
+            models.PagamentoFatura.mes == mes,
+            models.PagamentoFatura.ano == ano,
+        ).first()
         total_faturas += tot
         dados_cartoes.append({
             "id": c.id,
@@ -227,6 +236,7 @@ def fechamento_consolidado_mes(
             "limite": c.limite,
             "total": tot,
             "pago": pago,
+            "fatura_paga": pag_fatura is not None,
             "pendente": round(tot - pago, 2),
             "qtd_parcelas": len(parcelas),
             "itens": [
@@ -261,23 +271,27 @@ def fechamento_consolidado_mes(
         ).all()
         for l in lancamentos_p:
             for parc in l.parcelas:
+                if parc.status == "cancelado":
+                    continue
                 if parc.mes == mes and parc.ano == ano:
                     compras_pessoa.append({
                         "descricao": l.descricao,
                         "tipo": l.tipo,
                         "cartao": l.cartao.nome if l.cartao else None,
+                        "cartao_cor": l.cartao.cor if l.cartao else None,
                         "parcela": f"{parc.numero}/{l.total_parcelas}",
                         "valor": parc.valor,
                         "status": parc.status,
                         "data": l.data_lancamento.isoformat()
                     })
                 elif (parc.ano > ano) or (parc.ano == ano and parc.mes > mes):
-                    if parc.status != "pago":
+                    if parc.status not in ("pago", "cancelado"):
                         parcelas_futuras_pessoa.append({
                             "mes": parc.mes,
                             "ano": parc.ano,
                             "descricao": l.descricao,
                             "cartao": l.cartao.nome if l.cartao else None,
+                            "cartao_cor": l.cartao.cor if l.cartao else None,
                             "parcela": f"{parc.numero}/{l.total_parcelas}",
                             "valor": parc.valor
                         })
@@ -361,6 +375,8 @@ def parcelas_futuras(meses: int = 12, db: Session = Depends(get_db), usuario = D
                 "parcela": f"{p.numero}/{l.total_parcelas}",
                 "valor": p.valor,
                 "cartao": l.cartao.nome if l.cartao else None,
+                "cartao_cor": l.cartao.cor if l.cartao else None,
+                "cartao_bandeira": l.cartao.bandeira if l.cartao else None,
                 "pessoa": l.pessoa.nome if l.pessoa else "Você",
                 "modulo": l.modulo.nome if l.modulo else None
             })

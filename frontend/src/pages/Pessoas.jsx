@@ -1,21 +1,28 @@
 import { useState, useEffect, useRef } from 'react';
 import Avatar from '../components/Avatar';
+import { mediaUrl } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import {
   pessoas as pessoasApi,
   contas as contasApi,
+  lancamentos as lancamentosApi,
   whatsapp as whatsappApi,
   publicShareOrigin
 } from '../api/client';
 import {
   Users, Plus, ChevronDown, ChevronUp, Download,
-  MessageCircle, DollarSign, X, CheckCircle, Trash2, Send,
-  Camera, Edit2, User, Link2, Share2
+  MessageCircle, DollarSign, X, CheckCircle, Trash2,
+  Camera, Edit2, User, Link2, Share2, RotateCcw, Eraser, AlertTriangle
 } from 'lucide-react';
 
 function fmt(val) {
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val || 0);
 }
+
+const MESES_NOMES = [
+  'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+  'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
+];
 
 function ModalNovaPessoa({ onClose, onSaved }) {
   const [form, setForm] = useState({
@@ -60,24 +67,23 @@ function ModalNovaPessoa({ onClose, onSaved }) {
 
   return (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-6 border border-gray-100">
+      <div className="bg-[var(--surface)] text-[var(--ink)] rounded-3xl shadow-2xl w-full max-w-md p-6 border border-[var(--line)]">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-bold text-gray-900">Cadastrar Nova Pessoa</h2>
-          <button onClick={onClose} className="p-1 text-gray-400 hover:text-gray-700 rounded-lg"><X size={20} /></button>
+          <h2 className="text-lg font-bold text-[var(--ink)]">Cadastrar Nova Pessoa</h2>
+          <button onClick={onClose} className="p-1 text-[var(--muted)] hover:text-[var(--ink)] rounded-lg"><X size={20} /></button>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          {/* Seletor de Foto */}
           <div className="flex flex-col items-center justify-center gap-2 pb-2">
             <div
               onClick={() => fileInputRef.current?.click()}
-              className="relative w-20 h-20 rounded-full border-2 border-dashed border-gray-300 hover:border-blue-500 flex items-center justify-center cursor-pointer overflow-hidden group bg-slate-50 transition-all shadow-sm"
+              className="relative w-20 h-20 rounded-full border-2 border-dashed border-[var(--line)] hover:border-blue-500 flex items-center justify-center cursor-pointer overflow-hidden group bg-[var(--raised)] transition-all shadow-sm"
               style={{ borderColor: fotoPreview ? form.cor : undefined }}
             >
               {fotoPreview ? (
                 <img src={fotoPreview} alt="Preview" className="w-full h-full object-cover" />
               ) : (
-                <div className="flex flex-col items-center text-gray-400 group-hover:text-blue-500">
+                <div className="flex flex-col items-center text-[var(--muted)] group-hover:text-blue-500">
                   <Camera size={24} />
                   <span className="text-[10px] mt-1 font-medium">Foto</span>
                 </div>
@@ -93,7 +99,7 @@ function ModalNovaPessoa({ onClose, onSaved }) {
               accept="image/*"
               className="hidden"
             />
-            <span className="text-xs text-gray-400">Toque para adicionar foto</span>
+            <span className="text-xs text-[var(--muted)]">Toque para adicionar foto</span>
           </div>
 
           <div>
@@ -101,7 +107,7 @@ function ModalNovaPessoa({ onClose, onSaved }) {
             <input
               type="text"
               className="input font-medium"
-              placeholder="Ex: Thais, Luane, Alexandre..."
+              placeholder="Ex: Thais, Luane, Alessandra..."
               value={form.nome}
               onChange={e => setForm({ ...form, nome: e.target.value })}
               required
@@ -113,11 +119,11 @@ function ModalNovaPessoa({ onClose, onSaved }) {
             <input
               type="text"
               className="input"
-              placeholder="(11) 99999-9999"
+              placeholder="(12) 99999-9999"
               value={form.telefone}
               onChange={e => setForm({ ...form, telefone: e.target.value })}
             />
-            <p className="text-xs text-gray-400 mt-1">Usado para encaminhar o fechamento em PDF diretamente.</p>
+            <p className="text-xs text-[var(--muted)] mt-1">Usado para encaminhar o fechamento em PDF diretamente.</p>
           </div>
 
           <div>
@@ -125,15 +131,15 @@ function ModalNovaPessoa({ onClose, onSaved }) {
             <div className="flex items-center gap-3">
               <input
                 type="color"
-                className="w-12 h-10 rounded-lg cursor-pointer border border-gray-300"
+                className="w-12 h-10 rounded-lg cursor-pointer border border-[var(--line)] bg-transparent"
                 value={form.cor}
                 onChange={e => setForm({ ...form, cor: e.target.value })}
               />
-              <span className="text-xs text-gray-500 font-mono uppercase">{form.cor}</span>
+              <span className="text-xs text-[var(--muted)] font-mono uppercase">{form.cor}</span>
             </div>
           </div>
 
-          <div className="flex gap-2 justify-end pt-3 border-t">
+          <div className="flex gap-2 justify-end pt-3 border-t border-[var(--line)]">
             <button type="button" onClick={onClose} className="btn-secondary">Cancelar</button>
             <button type="submit" disabled={submitting} className="btn-primary">
               {submitting ? 'Salvando...' : 'Salvar Pessoa'}
@@ -152,7 +158,7 @@ function ModalEditarPessoa({ pessoa, onClose, onSaved }) {
     cor: pessoa.cor || '#10B981'
   });
   const [fotoFile, setFotoFile] = useState(null);
-  const [fotoPreview, setFotoPreview] = useState(pessoa.foto_path || null);
+  const [fotoPreview, setFotoPreview] = useState(pessoa.foto_path ? mediaUrl(pessoa.foto_path) : null);
   const [submitting, setSubmitting] = useState(false);
   const fileInputRef = useRef(null);
 
@@ -187,18 +193,17 @@ function ModalEditarPessoa({ pessoa, onClose, onSaved }) {
 
   return (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-6 border border-gray-100">
+      <div className="bg-[var(--surface)] text-[var(--ink)] rounded-3xl shadow-2xl w-full max-w-md p-6 border border-[var(--line)]">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-bold text-gray-900">Editar Pessoa</h2>
-          <button onClick={onClose} className="p-1 text-gray-400 hover:text-gray-700 rounded-lg"><X size={20} /></button>
+          <h2 className="text-lg font-bold text-[var(--ink)]">Editar Pessoa</h2>
+          <button onClick={onClose} className="p-1 text-[var(--muted)] hover:text-[var(--ink)] rounded-lg"><X size={20} /></button>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          {/* Seletor de Foto */}
           <div className="flex flex-col items-center justify-center gap-2 pb-2">
             <div
               onClick={() => fileInputRef.current?.click()}
-              className="relative w-20 h-20 rounded-full border-2 border-dashed border-gray-300 hover:border-blue-500 flex items-center justify-center cursor-pointer overflow-hidden group bg-slate-50 transition-all shadow-sm"
+              className="relative w-20 h-20 rounded-full border-2 border-dashed border-[var(--line)] hover:border-blue-500 flex items-center justify-center cursor-pointer overflow-hidden group bg-[var(--raised)] transition-all shadow-sm"
               style={{ borderColor: form.cor }}
             >
               {fotoPreview ? (
@@ -222,7 +227,7 @@ function ModalEditarPessoa({ pessoa, onClose, onSaved }) {
               accept="image/*"
               className="hidden"
             />
-            <span className="text-xs text-gray-400">Toque para alterar a foto</span>
+            <span className="text-xs text-[var(--muted)]">Toque para alterar a foto</span>
           </div>
 
           <div>
@@ -230,7 +235,7 @@ function ModalEditarPessoa({ pessoa, onClose, onSaved }) {
             <input
               type="text"
               className="input font-medium"
-              placeholder="Ex: Thais, Luane, Alexandre..."
+              placeholder="Ex: Thais, Luane, Alessandra..."
               value={form.nome}
               onChange={e => setForm({ ...form, nome: e.target.value })}
               required
@@ -242,7 +247,7 @@ function ModalEditarPessoa({ pessoa, onClose, onSaved }) {
             <input
               type="text"
               className="input"
-              placeholder="(11) 99999-9999"
+              placeholder="(12) 99999-9999"
               value={form.telefone}
               onChange={e => setForm({ ...form, telefone: e.target.value })}
             />
@@ -253,15 +258,15 @@ function ModalEditarPessoa({ pessoa, onClose, onSaved }) {
             <div className="flex items-center gap-3">
               <input
                 type="color"
-                className="w-12 h-10 rounded-lg cursor-pointer border border-gray-300"
+                className="w-12 h-10 rounded-lg cursor-pointer border border-[var(--line)] bg-transparent"
                 value={form.cor}
                 onChange={e => setForm({ ...form, cor: e.target.value })}
               />
-              <span className="text-xs text-gray-500 font-mono uppercase">{form.cor}</span>
+              <span className="text-xs text-[var(--muted)] font-mono uppercase">{form.cor}</span>
             </div>
           </div>
 
-          <div className="flex gap-2 justify-end pt-3 border-t">
+          <div className="flex gap-2 justify-end pt-3 border-t border-[var(--line)]">
             <button type="button" onClick={onClose} className="btn-secondary">Cancelar</button>
             <button type="submit" disabled={submitting} className="btn-primary">
               {submitting ? 'Salvando...' : 'Salvar Alterações'}
@@ -308,9 +313,9 @@ function ModalRegistrarPagamento({ pessoa, contas, onClose, onSaved }) {
 
   return (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md max-h-[90dvh] overflow-y-auto p-6 border border-gray-100">
-        <h2 className="text-lg font-bold text-gray-900 mb-0.5">Registrar Pagamento Recebido</h2>
-        <p className="text-xs text-gray-500 mb-4">Recebimento de: <strong className="text-gray-900">{pessoa.nome}</strong></p>
+      <div className="bg-[var(--surface)] text-[var(--ink)] rounded-3xl shadow-2xl w-full max-w-md max-h-[90dvh] overflow-y-auto p-6 border border-[var(--line)]">
+        <h2 className="text-lg font-bold text-[var(--ink)] mb-0.5">Registrar Pagamento Recebido</h2>
+        <p className="text-xs text-[var(--muted)] mb-4">Recebimento de: <strong className="text-[var(--ink)]">{pessoa.nome}</strong></p>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
@@ -319,7 +324,7 @@ function ModalRegistrarPagamento({ pessoa, contas, onClose, onSaved }) {
               type="number"
               step="0.01"
               min="0.01"
-              className="input text-base font-bold text-gray-900"
+              className="input text-base font-bold text-[var(--ink)]"
               placeholder="0,00"
               value={form.valor}
               onChange={e => setForm({ ...form, valor: e.target.value })}
@@ -364,7 +369,7 @@ function ModalRegistrarPagamento({ pessoa, contas, onClose, onSaved }) {
               </select>
             </label>
           )}
-          {form.forma === 'abatimento' && <p className="text-sm text-gray-500">O valor será descontado do saldo da pessoa, sem entrada em conta.</p>}
+          {form.forma === 'abatimento' && <p className="text-sm text-[var(--muted)]">O valor será descontado do saldo da pessoa, sem entrada em conta.</p>}
 
           <div>
             <label className="label">Observação / Comprovante</label>
@@ -377,13 +382,344 @@ function ModalRegistrarPagamento({ pessoa, contas, onClose, onSaved }) {
             />
           </div>
 
-          <div className="flex gap-2 justify-end pt-3 border-t">
+          <div className="flex gap-2 justify-end pt-3 border-t border-[var(--line)]">
             <button type="button" onClick={onClose} className="btn-secondary">Cancelar</button>
             <button type="submit" disabled={submitting} className="btn-success">
               {submitting ? 'Registrando...' : 'Registrar Pagamento'}
             </button>
           </div>
         </form>
+      </div>
+    </div>
+  );
+}
+
+function ModalZerarPessoa({ pessoa, mesInicial, anoInicial, onClose, onSaved }) {
+  const hoje = new Date();
+  const [opcao, setOpcao] = useState(mesInicial ? 'mes' : 'tudo');
+  const [mes, setMes] = useState(mesInicial || (hoje.getMonth() + 1));
+  const [ano, setAno] = useState(anoInicial || hoje.getFullYear());
+  const [limparPagamentos, setLimparPagamentos] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleConfirmar = async (e) => {
+    e.preventDefault();
+    setSubmitting(true);
+    try {
+      const payload =
+        opcao === 'abater'
+          ? { modo: 'abater_divida', escopo: 'mes', mes: Number(mes), ano: Number(ano) }
+          : opcao === 'mes'
+            ? { modo: 'apagar_lancamentos', escopo: 'mes', mes: Number(mes), ano: Number(ano), limpar_pagamentos: limparPagamentos }
+            : { modo: 'apagar_lancamentos', escopo: 'tudo', limpar_pagamentos: limparPagamentos };
+
+      await pessoasApi.zerar(pessoa.id, payload);
+      onSaved();
+      onClose();
+    } catch (err) {
+      alert('Erro ao zerar gastos: ' + (err.response?.data?.detail || err.message));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/65 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <div className="bg-[var(--surface)] text-[var(--ink)] rounded-3xl shadow-2xl w-full max-w-lg max-h-[92dvh] overflow-y-auto p-6 border border-[var(--line)] space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="w-10 h-10 rounded-2xl bg-amber-500/15 text-amber-500 flex items-center justify-center shrink-0">
+              <Eraser size={20} />
+            </div>
+            <div>
+              <h2 className="text-lg font-extrabold text-[var(--ink)]">Zerar Gastos / Dívida — {pessoa.nome}</h2>
+              <p className="text-xs text-emerald-500 font-semibold">
+                ✓ O cadastro, foto, WhatsApp e link de {pessoa.nome} continuarão salvos!
+              </p>
+            </div>
+          </div>
+          <button type="button" onClick={onClose} className="p-1 text-[var(--muted)] hover:text-[var(--ink)]">
+            <X size={20} />
+          </button>
+        </div>
+
+        <form onSubmit={handleConfirmar} className="space-y-3.5">
+          <label
+            className={`block p-3.5 rounded-2xl border cursor-pointer transition-all ${
+              opcao === 'tudo'
+                ? 'border-blue-500 bg-[var(--accent-tint)] ring-2 ring-blue-500/20'
+                : 'border-[var(--line)] bg-[var(--raised)]'
+            }`}
+          >
+            <div className="flex items-start gap-3">
+              <input
+                type="radio"
+                name="opcaoZerar"
+                checked={opcao === 'tudo'}
+                onChange={() => setOpcao('tudo')}
+                className="mt-1"
+              />
+              <div>
+                <span className="font-bold text-sm text-[var(--ink)] block">
+                  Zerar Conta Completa (Apagar todos os lançamentos)
+                </span>
+                <span className="text-xs text-[var(--muted)] block mt-0.5">
+                  Cancela todas as compras/parcelas de {pessoa.nome} e deixa a conta zerada em R$ 0,00.
+                </span>
+              </div>
+            </div>
+          </label>
+
+          <label
+            className={`block p-3.5 rounded-2xl border cursor-pointer transition-all ${
+              opcao === 'mes'
+                ? 'border-blue-500 bg-[var(--accent-tint)] ring-2 ring-blue-500/20'
+                : 'border-[var(--line)] bg-[var(--raised)]'
+            }`}
+          >
+            <div className="flex items-start gap-3">
+              <input
+                type="radio"
+                name="opcaoZerar"
+                checked={opcao === 'mes'}
+                onChange={() => setOpcao('mes')}
+                className="mt-1"
+              />
+              <div className="flex-1">
+                <span className="font-bold text-sm text-[var(--ink)] block">
+                  Limpar Apenas os Lançamentos de um Mês Específico
+                </span>
+                <span className="text-xs text-[var(--muted)] block mt-0.5">
+                  Remove somente as parcelas e registros do mês selecionado abaixo, mantendo outros meses.
+                </span>
+              </div>
+            </div>
+          </label>
+
+          <label
+            className={`block p-3.5 rounded-2xl border cursor-pointer transition-all ${
+              opcao === 'abater'
+                ? 'border-blue-500 bg-[var(--accent-tint)] ring-2 ring-blue-500/20'
+                : 'border-[var(--line)] bg-[var(--raised)]'
+            }`}
+          >
+            <div className="flex items-start gap-3">
+              <input
+                type="radio"
+                name="opcaoZerar"
+                checked={opcao === 'abater'}
+                onChange={() => setOpcao('abater')}
+                className="mt-1"
+              />
+              <div>
+                <span className="font-bold text-sm text-[var(--ink)] block">
+                  Apenas Quitar / Perdoar Dívida (Manter compras na fatura do cartão)
+                </span>
+                <span className="text-xs text-[var(--muted)] block mt-0.5">
+                  Registra um abatimento automático deixando o saldo devedor de {pessoa.nome} em R$ 0,00 sem apagar as compras do cartão.
+                </span>
+              </div>
+            </div>
+          </label>
+
+          {(opcao === 'mes' || opcao === 'abater') && (
+            <div className="grid grid-cols-2 gap-3 p-3 rounded-2xl bg-[var(--raised)] border border-[var(--line)]">
+              <div>
+                <label className="label">Mês</label>
+                <select className="input" value={mes} onChange={(e) => setMes(Number(e.target.value))}>
+                  {MESES_NOMES.map((mNome, i) => (
+                    <option key={i + 1} value={i + 1}>{mNome}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="label">Ano</label>
+                <input
+                  type="number"
+                  min="2020"
+                  max="2040"
+                  className="input"
+                  value={ano}
+                  onChange={(e) => setAno(Number(e.target.value))}
+                />
+              </div>
+            </div>
+          )}
+
+          {opcao !== 'abater' && (
+            <label className="flex items-center gap-2.5 p-3 rounded-xl bg-[var(--raised)] border border-[var(--line)] text-xs cursor-pointer">
+              <input
+                type="checkbox"
+                checked={limparPagamentos}
+                onChange={(e) => setLimparPagamentos(e.target.checked)}
+              />
+              <span className="text-[var(--ink)] font-medium">
+                Limpar também os pagamentos recebidos no período (evita ficar saldo de crédito sobrando)
+              </span>
+            </label>
+          )}
+
+          <div className="flex gap-2 justify-end pt-3 border-t border-[var(--line)]">
+            <button type="button" onClick={onClose} className="btn-secondary">
+              Cancelar
+            </button>
+            <button type="submit" disabled={submitting} className="btn-primary">
+              {submitting ? 'Processando...' : 'Confirmar e Zerar'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function ModalConfirmarExclusaoPessoa({ pessoa, onClose, onOpenZerar, onDeleted }) {
+  const [deleting, setDeleting] = useState(false);
+
+  const confirmarRemocaoCadastro = async () => {
+    setDeleting(true);
+    try {
+      await pessoasApi.deletar(pessoa.id);
+      onDeleted();
+      onClose();
+    } catch (err) {
+      alert('Erro ao remover pessoa: ' + (err.response?.data?.detail || err.message));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/65 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <div className="bg-[var(--surface)] text-[var(--ink)] rounded-3xl shadow-2xl w-full max-w-md p-6 border border-[var(--line)] space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="w-10 h-10 rounded-2xl bg-rose-500/15 text-rose-500 flex items-center justify-center shrink-0">
+              <AlertTriangle size={20} />
+            </div>
+            <h3 className="font-extrabold text-lg text-[var(--ink)]">O que deseja fazer com {pessoa.nome}?</h3>
+          </div>
+          <button type="button" onClick={onClose} className="p-1 text-[var(--muted)] hover:text-[var(--ink)]">
+            <X size={20} />
+          </button>
+        </div>
+
+        <p className="text-xs text-[var(--muted)] leading-relaxed">
+          Se você quer apenas <strong>limpar os gastos, parcelas ou zerar a dívida</strong>, escolha a primeira opção abaixo para manter o cadastro, foto e link de {pessoa.nome}!
+        </p>
+
+        <div className="space-y-2.5 pt-1">
+          <button
+            type="button"
+            onClick={() => {
+              onClose();
+              onOpenZerar();
+            }}
+            className="btn-primary w-full py-3 text-sm font-bold flex items-center justify-center gap-2"
+          >
+            <Eraser size={17} />
+            <span>Apenas Zerar Gastos / Dívida (Manter {pessoa.nome})</span>
+          </button>
+
+          <button
+            type="button"
+            disabled={deleting}
+            onClick={confirmarRemocaoCadastro}
+            className="btn-danger w-full py-2.5 text-xs font-bold flex items-center justify-center gap-2"
+          >
+            <Trash2 size={15} />
+            <span>{deleting ? 'Removendo...' : `Remover Cadastro de ${pessoa.nome}`}</span>
+          </button>
+
+          <button type="button" onClick={onClose} className="btn-secondary w-full py-2 text-xs">
+            Cancelar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ModalExcluirLancamentoPessoa({ item, nomeMes, onClose, onSaved }) {
+  const [loading, setLoading] = useState(false);
+  const temMultiplasParcelas = (item.total_parcelas || 1) > 1;
+
+  const cancelarSoParcela = async () => {
+    setLoading(true);
+    try {
+      await lancamentosApi.alterarParcelaStatus(item.lancamento_id, item.numero, 'cancelado');
+      onSaved();
+      onClose();
+    } catch (err) {
+      alert('Erro ao cancelar parcela: ' + (err.response?.data?.detail || err.message));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const excluirCompraInteira = async () => {
+    setLoading(true);
+    try {
+      await lancamentosApi.cancelar(item.lancamento_id);
+      onSaved();
+      onClose();
+    } catch (err) {
+      alert('Erro ao excluir lançamento: ' + (err.response?.data?.detail || err.message));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/65 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <div className="bg-[var(--surface)] text-[var(--ink)] rounded-3xl shadow-2xl w-full max-w-md p-6 border border-[var(--line)] space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="font-extrabold text-base text-[var(--ink)]">Excluir Lançamento</h3>
+          <button type="button" onClick={onClose} className="p-1 text-[var(--muted)] hover:text-[var(--ink)]">
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="p-3.5 rounded-2xl bg-[var(--raised)] border border-[var(--line)] text-xs space-y-1">
+          <p className="font-bold text-sm text-[var(--ink)]">{item.descricao}</p>
+          <p className="text-[var(--muted)]">
+            Parcela: <strong>{item.parcela}</strong> • Valor em {nomeMes}: <strong>{fmt(item.valor)}</strong>
+          </p>
+        </div>
+
+        <div className="space-y-2">
+          {temMultiplasParcelas && (
+            <button
+              type="button"
+              disabled={loading}
+              onClick={cancelarSoParcela}
+              className="btn-primary w-full py-2.5 text-xs font-bold flex items-center justify-center gap-2"
+            >
+              <Eraser size={15} />
+              <span>Remover Só Esta Parcela ({item.parcela} em {nomeMes})</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            disabled={loading}
+            onClick={excluirCompraInteira}
+            className="btn-danger w-full py-2.5 text-xs font-bold flex items-center justify-center gap-2"
+          >
+            <Trash2 size={15} />
+            <span>
+              {loading
+                ? 'Excluindo...'
+                : temMultiplasParcelas
+                  ? `Excluir Compra Inteira (${item.total_parcelas}x)`
+                  : 'Confirmar Exclusão deste Lançamento'}
+            </span>
+          </button>
+
+          <button type="button" onClick={onClose} className="btn-secondary w-full py-2 text-xs">
+            Cancelar
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -418,9 +754,9 @@ function ModalLinkLancamento({ pessoa, onClose }) {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Link2 className="text-blue-500" size={22} />
-            <h3 className="font-bold text-ink text-lg">Link de Celular — {pessoa.nome}</h3>
+            <h3 className="font-bold text-[var(--ink)] text-lg">Link de Celular — {pessoa.nome}</h3>
           </div>
-          <button onClick={onClose} className="p-1 text-slate-400 hover:text-ink">
+          <button onClick={onClose} className="p-1 text-slate-400 hover:text-[var(--ink)]">
             <X size={20} />
           </button>
         </div>
@@ -428,19 +764,19 @@ function ModalLinkLancamento({ pessoa, onClose }) {
         <div className="flex items-center gap-3.5 p-3 rounded-2xl border border-slate-700/40" style={{ backgroundColor: 'var(--raised)' }}>
           <Avatar nome={pessoa.nome} foto={pessoa.foto_path} cor={pessoa.cor} className="w-12 h-12 rounded-2xl shrink-0" />
           <div className="min-w-0">
-            <p className="font-extrabold text-ink text-base truncate">{pessoa.nome}</p>
+            <p className="font-extrabold text-[var(--ink)] text-base truncate">{pessoa.nome}</p>
             <p className="text-xs text-slate-400 truncate">{pessoa.telefone || 'Sem telefone cadastrado'}</p>
           </div>
         </div>
 
         <div>
-          <label className="label text-ink font-semibold">Link Pessoal de Lançamento (Nuvem 24/7)</label>
+          <label className="label text-[var(--ink)] font-semibold">Link Pessoal de Lançamento (Nuvem 24/7)</label>
           <div className="flex items-center gap-2">
             <input
               type="text"
               readOnly
               value={link}
-              className="input text-xs font-mono select-all text-slate-300"
+              className="input text-xs font-mono select-all"
             />
             <button
               type="button"
@@ -448,7 +784,7 @@ function ModalLinkLancamento({ pessoa, onClose }) {
               className={`px-3.5 py-2.5 rounded-xl text-xs font-bold shrink-0 transition-all flex items-center gap-1.5 ${
                 copiado
                   ? 'bg-emerald-600 text-white shadow'
-                  : 'btn-secondary text-blue-400 hover:text-blue-300'
+                  : 'btn-secondary text-blue-500'
               }`}
             >
               {copiado ? <CheckCircle size={15} /> : <Share2 size={15} />}
@@ -457,14 +793,14 @@ function ModalLinkLancamento({ pessoa, onClose }) {
           </div>
         </div>
 
-        <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-[11px] text-emerald-300 space-y-1">
+        <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-[11px] text-emerald-500 space-y-1">
           <strong>✅ Link HTTPS 24/7 sincronizado entre Celular e PC:</strong>
           <p>
             Funciona em qualquer celular (Wi-Fi, 4G ou 5G). Toda compra ou foto enviada por {pessoa.nome} aparece automaticamente em <strong>Aprovações</strong> no seu celular e neste computador.
           </p>
         </div>
 
-        <div className="space-y-2 pt-2 border-t border-slate-700/50">
+        <div className="space-y-2 pt-2 border-t border-[var(--line)]">
           <button
             type="button"
             onClick={enviarWhatsApp}
@@ -478,7 +814,7 @@ function ModalLinkLancamento({ pessoa, onClose }) {
             href={link}
             target="_blank"
             rel="noreferrer"
-            className="btn-secondary w-full py-2.5 text-xs text-center block text-slate-300 hover:text-white"
+            className="btn-secondary w-full py-2.5 text-xs text-center block"
           >
             Abrir e Testar Tela no Navegador
           </a>
@@ -488,26 +824,29 @@ function ModalLinkLancamento({ pessoa, onClose }) {
   );
 }
 
-function CardPessoa({ pessoa, contas, onRefresh }) {
+function CardPessoa({ pessoa, contas, onRefresh, modoInativas = false }) {
   const { usuario } = useAuth();
   const nomeGestor = usuario?.nome || 'Administração Financeira';
   const [expanded, setExpanded] = useState(false);
   const [extrato, setExtrato] = useState(null);
   const [loadingExtrato, setLoadingExtrato] = useState(false);
-  const [mesAberto, setMesAberto] = useState(0); // índice do mês expandido
+  const [mesAberto, setMesAberto] = useState(0);
   const [modalPagamento, setModalPagamento] = useState(false);
   const [modalEditar, setModalEditar] = useState(false);
   const [modalLink, setModalLink] = useState(false);
+  const [modalZerar, setModalZerar] = useState(null); // null | { mes?, ano? }
+  const [modalConfirmarExclusao, setModalConfirmarExclusao] = useState(false);
+  const [itemExcluindo, setItemExcluindo] = useState(null); // { item, nomeMes }
   const [enviandoWhats, setEnviandoWhats] = useState(false);
   const [gerandoPdf, setGerandoPdf] = useState(false);
 
-  const carregarExtrato = async () => {
-    if (extrato) return;
+  const carregarExtrato = async (forcar = false) => {
+    if (extrato && !forcar) return;
     setLoadingExtrato(true);
     try {
       const res = await pessoasApi.extrato(pessoa.id);
       setExtrato(res.data);
-      setMesAberto(0);
+      if (!extrato) setMesAberto(0);
     } catch (e) {
       console.error(e);
     } finally {
@@ -515,24 +854,37 @@ function CardPessoa({ pessoa, contas, onRefresh }) {
     }
   };
 
+  const recarregarTudo = async () => {
+    await carregarExtrato(true);
+    onRefresh();
+  };
+
   const handleToggle = () => {
+    if (modoInativas) return;
     if (!expanded) carregarExtrato();
     setExpanded(!expanded);
   };
 
-  const handleDelete = async (e) => {
+  const handleRestaurar = async (e) => {
     e.stopPropagation();
-    if (window.confirm(`Tem certeza que deseja remover ${pessoa.nome}?`)) {
-      try {
-        await pessoasApi.deletar(pessoa.id);
-        onRefresh();
-      } catch (err) {
-        alert('Erro ao excluir pessoa: ' + (err.response?.data?.detail || err.message));
-      }
+    try {
+      await pessoasApi.restaurar(pessoa.id);
+      onRefresh();
+    } catch (err) {
+      alert('Erro ao restaurar pessoa: ' + (err.response?.data?.detail || err.message));
     }
   };
 
-  // Download direto do PDF no navegador
+  const handleDeletarPagamento = async (pag) => {
+    if (!window.confirm(`Excluir o pagamento recebido de ${fmt(pag.valor)}?`)) return;
+    try {
+      await pessoasApi.deletarPagamento(pessoa.id, pag.id);
+      await recarregarTudo();
+    } catch (err) {
+      alert('Erro ao excluir pagamento: ' + (err.response?.data?.detail || err.message));
+    }
+  };
+
   const handleDownloadPDF = async (mes, ano) => {
     setGerandoPdf(true);
     try {
@@ -556,7 +908,6 @@ function CardPessoa({ pessoa, contas, onRefresh }) {
     }
   };
 
-  // Envio via WhatsApp automático ou link Web direto
   const handleEnviarWhatsApp = async (mes, ano, nomeMes, h) => {
     setEnviandoWhats(true);
     const numLimpo = (pessoa.telefone || '').replace(/\D/g, '');
@@ -598,7 +949,6 @@ function CardPessoa({ pessoa, contas, onRefresh }) {
       msgTexto += `🛍️ *Compras deste mês:* Nenhuma nova compra no período.\n\n`;
     }
 
-    // Parcelas Futuras se tiver no histórico
     if (extrato?.historico) {
       const futuras = extrato.historico.filter(hist => {
         if (hist.ano > ano) return true;
@@ -627,11 +977,9 @@ function CardPessoa({ pessoa, contas, onRefresh }) {
     msgTexto += `Qualquer dúvida só me avisar! Abraço, ${nomeGestor}.`;
 
     try {
-      // 1. Obtém o caminho absoluto do PDF gerado no backend
       const resPath = await pessoasApi.obterPdfPath(pessoa.id, mes, ano);
       const { pdf_path, telefone } = resPath.data || {};
 
-      // 2. Tenta enviar pelo serviço WhatsApp Web local
       try {
         const resEnvio = await whatsappApi.sendPdf({
           telefone: telefone || pessoa.telefone,
@@ -648,7 +996,6 @@ function CardPessoa({ pessoa, contas, onRefresh }) {
           return;
         }
       } catch (whatsErr) {
-        // Se o serviço automático não estiver conectado ou der erro, abre via wa.me com a mensagem completa
         if (numLimpo) {
           window.open(`https://wa.me/${telefoneFinal}?text=${encodeURIComponent(msgTexto)}`, '_blank');
         } else {
@@ -676,77 +1023,121 @@ function CardPessoa({ pessoa, contas, onRefresh }) {
         <div className="flex items-center gap-4">
           <Avatar nome={pessoa.nome} foto={pessoa.foto_path} cor={pessoa.cor} className="avatar--person" />
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <h3 className="font-extrabold text-[var(--ink)] text-lg">{pessoa.nome}</h3>
               {pessoa.telefone && (
                 <span className="text-xs text-[var(--muted)] font-mono">📱 {pessoa.telefone}</span>
               )}
             </div>
             <p className="text-xs text-[var(--muted)] mt-0.5">
-              Gastos neste mês: {fmt(pessoa.total_gastos_mes)}
+              {modoInativas
+                ? 'Cadastro arquivado — clique em Restaurar para reativar'
+                : `Gastos neste mês: ${fmt(pessoa.total_gastos_mes)}`}
             </p>
           </div>
         </div>
 
-        <div className="flex items-center justify-between sm:justify-end gap-3">
-          <div className="text-right">
-            <span className="text-xs text-[var(--muted)] font-medium block">Situação Atual</span>
-            {pessoa.saldo_devedor > 0 ? (
-              <span className="badge-red text-sm py-1 px-3">Deve {fmt(pessoa.saldo_devedor)}</span>
-            ) : pessoa.credito_a_favor > 0 ? (
-              <span className="badge-blue text-sm py-1 px-3">Crédito {fmt(pessoa.credito_a_favor)}</span>
-            ) : (
-              <span className="badge-green text-sm py-1 px-3">Quitado ✓</span>
-            )}
-          </div>
+        <div className="flex items-center justify-between sm:justify-end gap-3 flex-wrap">
+          {!modoInativas && (
+            <div className="text-right">
+              <span className="text-xs text-[var(--muted)] font-medium block">Situação Atual</span>
+              {pessoa.saldo_devedor > 0 ? (
+                <span className="badge-red text-sm py-1 px-3">Deve {fmt(pessoa.saldo_devedor)}</span>
+              ) : pessoa.credito_a_favor > 0 ? (
+                <span className="badge-blue text-sm py-1 px-3">Crédito {fmt(pessoa.credito_a_favor)}</span>
+              ) : (
+                <span className="badge-green text-sm py-1 px-3">Quitado ✓</span>
+              )}
+            </div>
+          )}
 
-          {/* Botões de Ação: Link de Lançamento, Editar e Excluir */}
-          <div className="flex items-center gap-1 border-l pl-3 ml-2 border-[var(--line)]">
-            {pessoa.token_acesso && (
+          {modoInativas ? (
+            <button
+              type="button"
+              onClick={handleRestaurar}
+              className="btn-success text-xs py-2 px-3.5 font-bold flex items-center gap-1.5"
+            >
+              <RotateCcw size={15} />
+              <span>Restaurar Pessoa</span>
+            </button>
+          ) : (
+            <div className="flex items-center gap-1 border-l pl-3 ml-1 border-[var(--line)]">
+              {pessoa.token_acesso && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setModalLink(true);
+                  }}
+                  className="p-2 text-blue-500 hover:text-blue-400 hover:bg-blue-500/10 rounded-xl transition-colors"
+                  title="Abrir Link de Celular e WhatsApp"
+                >
+                  <Link2 size={16} />
+                </button>
+              )}
               <button
+                type="button"
                 onClick={(e) => {
                   e.stopPropagation();
-                  setModalLink(true);
+                  setModalZerar({});
                 }}
-                className="p-2 text-blue-500 hover:text-blue-400 hover:bg-blue-500/10 rounded-xl transition-colors"
-                title="Abrir Link e Opções de Envio WhatsApp para esta pessoa"
+                className="p-2 text-amber-500 hover:text-amber-400 hover:bg-amber-500/10 rounded-xl transition-colors"
+                title="Zerar Gastos / Limpar Dívida (sem excluir a pessoa)"
               >
-                <Link2 size={16} />
+                <Eraser size={16} />
               </button>
-            )}
-            <button
-              onClick={(e) => { e.stopPropagation(); setModalEditar(true); }}
-              className="p-2 text-[var(--muted)] hover:text-blue-500 hover:bg-[var(--accent-tint)] rounded-xl transition-colors"
-              title="Editar Pessoa"
-            >
-              <Edit2 size={16} />
-            </button>
-            <button
-              onClick={handleDelete}
-              className="p-2 text-[var(--muted)] hover:text-rose-500 hover:bg-rose-500/10 rounded-xl transition-colors"
-              title="Excluir Pessoa"
-            >
-              <Trash2 size={16} />
-            </button>
-          </div>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); setModalEditar(true); }}
+                className="p-2 text-[var(--muted)] hover:text-blue-500 hover:bg-[var(--accent-tint)] rounded-xl transition-colors"
+                title="Editar Pessoa"
+              >
+                <Edit2 size={16} />
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setModalConfirmarExclusao(true);
+                }}
+                className="p-2 text-[var(--muted)] hover:text-rose-500 hover:bg-rose-500/10 rounded-xl transition-colors"
+                title="Opções de Remoção / Zerar Gastos"
+              >
+                <Trash2 size={16} />
+              </button>
+            </div>
+          )}
 
-          <div className="p-2 text-[var(--muted)] hover:text-[var(--ink)]">
-            {expanded ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
-          </div>
+          {!modoInativas && (
+            <div className="p-2 text-[var(--muted)] hover:text-[var(--ink)]">
+              {expanded ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
+            </div>
+          )}
         </div>
       </div>
 
       {/* Extrato Detalhado */}
-      {expanded && (
+      {expanded && !modoInativas && (
         <div className="border-t border-[var(--line)] bg-[var(--canvas)]">
-          <div className="p-4 bg-[var(--surface)] border-b border-[var(--line)] flex items-center justify-between">
+          <div className="p-4 bg-[var(--surface)] border-b border-[var(--line)] flex flex-wrap items-center justify-between gap-2">
             <span className="text-xs font-bold text-[var(--muted)] uppercase tracking-wider">Histórico Mensal de Fechamentos</span>
-            <button
-              onClick={() => setModalPagamento(true)}
-              className="btn-success text-xs py-1.5 px-3"
-            >
-              <DollarSign size={14} /> Registrar Pagamento
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setModalZerar({})}
+                className="btn-secondary text-xs py-1.5 px-3 text-amber-500 border-amber-500/30 hover:bg-amber-500/10"
+                title="Limpar gastos ou zerar dívida mantendo o cadastro da pessoa"
+              >
+                <Eraser size={14} /> Zerar Gastos / Dívida
+              </button>
+              <button
+                type="button"
+                onClick={() => setModalPagamento(true)}
+                className="btn-success text-xs py-1.5 px-3"
+              >
+                <DollarSign size={14} /> Registrar Pagamento
+              </button>
+            </div>
           </div>
 
           {loadingExtrato ? (
@@ -761,7 +1152,7 @@ function CardPessoa({ pessoa, contas, onRefresh }) {
                     <div
                       className={`p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 cursor-pointer transition-all border-l-4 ${
                         isSelected
-                          ? 'border-l-blue-500 bg-blue-500/15 text-white'
+                          ? 'border-l-blue-500 bg-blue-500/15'
                           : h.is_atual
                             ? 'border-l-blue-400/50 bg-[var(--accent-tint)] hover-surface'
                             : 'border-l-transparent hover-surface'
@@ -791,6 +1182,8 @@ function CardPessoa({ pessoa, contas, onRefresh }) {
                         <div className="text-right">
                           {h.saldo_devedor > 0 ? (
                             <span className="text-rose-500 font-black text-sm">Pendente: {fmt(h.saldo_devedor)}</span>
+                          ) : h.credito_a_favor > 0 ? (
+                            <span className="text-blue-400 font-extrabold text-xs">Crédito: {fmt(h.credito_a_favor)}</span>
                           ) : (
                             <span className="text-emerald-500 font-extrabold text-xs">Quitado ✓</span>
                           )}
@@ -799,6 +1192,7 @@ function CardPessoa({ pessoa, contas, onRefresh }) {
                         {/* Botões de PDF e WhatsApp */}
                         <div className="flex items-center gap-2">
                           <button
+                            type="button"
                             onClick={(e) => { e.stopPropagation(); handleDownloadPDF(h.mes, h.ano); }}
                             disabled={gerandoPdf}
                             className="btn-secondary text-xs py-1 px-2.5"
@@ -808,6 +1202,7 @@ function CardPessoa({ pessoa, contas, onRefresh }) {
                           </button>
 
                           <button
+                            type="button"
                             onClick={(e) => { e.stopPropagation(); handleEnviarWhatsApp(h.mes, h.ano, h.nome_mes, h); }}
                             disabled={enviandoWhats}
                             className="btn-success text-xs py-1 px-2.5"
@@ -826,8 +1221,7 @@ function CardPessoa({ pessoa, contas, onRefresh }) {
                     {/* Detalhes do Fechamento do Mês */}
                     {isSelected && (
                       <div className="p-5 bg-[var(--canvas)] border-t border-blue-500/30 border-l-4 border-l-blue-500 space-y-4">
-                        {/* Banner de Contexto de Mês Selecionado */}
-                        <div className="p-3.5 rounded-2xl bg-blue-500/10 border border-blue-500/30 flex items-center justify-between">
+                        <div className="p-3.5 rounded-2xl bg-blue-500/10 border border-blue-500/30 flex flex-wrap items-center justify-between gap-2">
                           <div className="flex items-center gap-3">
                             <div className="w-9 h-9 rounded-xl bg-blue-600 text-white flex items-center justify-center font-black text-base shadow">
                               📅
@@ -836,16 +1230,23 @@ function CardPessoa({ pessoa, contas, onRefresh }) {
                               <div className="flex items-center gap-2 text-xs">
                                 <span className="font-extrabold uppercase text-blue-400 tracking-wider">Fechamento Aberto</span>
                                 <span className="text-slate-500">•</span>
-                                <span className="text-slate-400">Pessoa: <strong className="text-[var(--ink)]">{pessoa.nome}</strong></span>
+                                <span className="text-[var(--muted)]">Pessoa: <strong className="text-[var(--ink)]">{pessoa.nome}</strong></span>
                               </div>
                               <p className="text-base font-black text-[var(--ink)] tracking-tight">
                                 Mês de Referência: <span className="text-blue-400 underline decoration-blue-500 underline-offset-4">{h.nome_mes}</span>
                               </p>
                             </div>
                           </div>
-                          <span className="hidden md:inline-block text-[11px] font-semibold text-slate-400 bg-slate-800/80 px-3 py-1 rounded-xl border border-slate-700/60">
-                            Clique na linha de {h.nome_mes} para fechar
-                          </span>
+
+                          {(h.lancamentos.length > 0 || h.pagamentos.length > 0 || h.saldo_devedor > 0) && (
+                            <button
+                              type="button"
+                              onClick={() => setModalZerar({ mes: h.mes, ano: h.ano })}
+                              className="btn-secondary text-xs py-1.5 px-3 text-amber-500 border-amber-500/30 hover:bg-amber-500/10"
+                            >
+                              <Eraser size={13} /> Limpar / Zerar {h.nome_mes}
+                            </button>
+                          )}
                         </div>
 
                         {/* 4 Blocos de Resumo do Fechamento */}
@@ -881,18 +1282,38 @@ function CardPessoa({ pessoa, contas, onRefresh }) {
                           ) : (
                             <div className="space-y-1.5">
                               {h.lancamentos.map((item, i) => (
-                                <div key={i} className="flex items-center justify-between p-2.5 rounded-xl bg-[var(--surface)] border border-[var(--line)] text-xs">
-                                  <div>
-                                    <span className="font-bold text-[var(--ink)]">{item.descricao}</span>
-                                    <div className="flex items-center gap-2 mt-0.5 text-[var(--muted)] text-[11px]">
-                                      <span>{item.cartao ? `💳 ${item.cartao}` : '🏦 Conta'}</span>
+                                <div key={i} className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-[var(--surface)] border border-[var(--line)] text-xs">
+                                  <div className="min-w-0">
+                                    <span className="font-bold text-[var(--ink)] block truncate">{item.descricao}</span>
+                                    <div className="flex flex-wrap items-center gap-2 mt-0.5 text-[var(--muted)] text-[11px]">
+                                      {item.cartao ? (
+                                        <span className="inline-flex items-center gap-1.5 font-medium">
+                                          <span
+                                            className="w-2.5 h-2.5 rounded-full shrink-0"
+                                            style={{ backgroundColor: item.cartao_cor || '#8B5CF6' }}
+                                          />
+                                          💳 {item.cartao}
+                                        </span>
+                                      ) : (
+                                        <span>🏦 Conta</span>
+                                      )}
                                       <span>•</span>
                                       <span className="font-semibold text-blue-500">{item.parcela}</span>
                                       <span>•</span>
                                       <span>{new Date(item.data_lancamento + 'T00:00:00').toLocaleDateString('pt-BR')}</span>
                                     </div>
                                   </div>
-                                  <span className="font-black text-[var(--ink)] text-sm">{fmt(item.valor)}</span>
+                                  <div className="flex items-center gap-2 shrink-0">
+                                    <span className="font-black text-[var(--ink)] text-sm">{fmt(item.valor)}</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => setItemExcluindo({ item, nomeMes: h.nome_mes })}
+                                      className="p-1.5 text-[var(--muted)] hover:text-rose-500 hover:bg-rose-500/10 rounded-lg transition-colors"
+                                      title="Excluir este lançamento ou parcela"
+                                    >
+                                      <Trash2 size={14} />
+                                    </button>
+                                  </div>
                                 </div>
                               ))}
                             </div>
@@ -902,23 +1323,33 @@ function CardPessoa({ pessoa, contas, onRefresh }) {
                         {/* Lista de Pagamentos Recebidos */}
                         {h.pagamentos.length > 0 && (
                           <div>
-                            <h5 className="text-[11px] font-black text-emerald-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                            <h5 className="text-[11px] font-black text-emerald-500 uppercase tracking-wider mb-2 flex items-center gap-1.5">
                               <span>Pagamentos Recebidos em</span>
-                              <span className="text-emerald-300 font-extrabold">{h.nome_mes}</span>
+                              <span className="font-extrabold">{h.nome_mes}</span>
                             </h5>
                             <div className="space-y-1.5">
                               {h.pagamentos.map((pag, i) => (
-                                <div key={i} className="flex items-center justify-between p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-xs">
-                                  <div>
-                                    <span className="font-bold text-emerald-400">Pagamento recebido</span>
-                                    <p className="text-emerald-300/80 text-[11px]">
+                                <div key={i} className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-xs">
+                                  <div className="min-w-0">
+                                    <span className="font-bold text-emerald-500">Pagamento recebido</span>
+                                    <p className="text-[var(--muted)] text-[11px] truncate">
                                       {new Date(pag.data + 'T00:00:00').toLocaleDateString('pt-BR')}
                                       {pag.forma_pagamento && ` • ${pag.forma_pagamento}`}
                                       {pag.observacao && ` • ${pag.observacao}`}
                                       {pag.conta && ` • Entrou em: ${pag.conta}`}
                                     </p>
                                   </div>
-                                  <span className="font-black text-emerald-400 text-sm">+{fmt(pag.valor)}</span>
+                                  <div className="flex items-center gap-2 shrink-0">
+                                    <span className="font-black text-emerald-500 text-sm">+{fmt(pag.valor)}</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeletarPagamento(pag)}
+                                      className="p-1.5 text-[var(--muted)] hover:text-rose-500 hover:bg-rose-500/10 rounded-lg transition-colors"
+                                      title="Excluir este pagamento"
+                                    >
+                                      <Trash2 size={14} />
+                                    </button>
+                                  </div>
                                 </div>
                               ))}
                             </div>
@@ -939,7 +1370,7 @@ function CardPessoa({ pessoa, contas, onRefresh }) {
           pessoa={pessoa}
           contas={contas}
           onClose={() => setModalPagamento(false)}
-          onSaved={() => { setExtrato(null); carregarExtrato(); onRefresh(); }}
+          onSaved={recarregarTudo}
         />
       )}
 
@@ -947,7 +1378,7 @@ function CardPessoa({ pessoa, contas, onRefresh }) {
         <ModalEditarPessoa
           pessoa={pessoa}
           onClose={() => setModalEditar(false)}
-          onSaved={() => { setExtrato(null); carregarExtrato(); onRefresh(); }}
+          onSaved={recarregarTudo}
         />
       )}
 
@@ -955,6 +1386,34 @@ function CardPessoa({ pessoa, contas, onRefresh }) {
         <ModalLinkLancamento
           pessoa={pessoa}
           onClose={() => setModalLink(false)}
+        />
+      )}
+
+      {modalZerar && (
+        <ModalZerarPessoa
+          pessoa={pessoa}
+          mesInicial={modalZerar.mes}
+          anoInicial={modalZerar.ano}
+          onClose={() => setModalZerar(null)}
+          onSaved={recarregarTudo}
+        />
+      )}
+
+      {modalConfirmarExclusao && (
+        <ModalConfirmarExclusaoPessoa
+          pessoa={pessoa}
+          onClose={() => setModalConfirmarExclusao(false)}
+          onOpenZerar={() => setModalZerar({})}
+          onDeleted={onRefresh}
+        />
+      )}
+
+      {itemExcluindo && (
+        <ModalExcluirLancamentoPessoa
+          item={itemExcluindo.item}
+          nomeMes={itemExcluindo.nomeMes}
+          onClose={() => setItemExcluindo(null)}
+          onSaved={recarregarTudo}
         />
       )}
     </div>
@@ -966,12 +1425,13 @@ export default function Pessoas() {
   const [contas, setContas] = useState([]);
   const [loading, setLoading] = useState(true);
   const [modalNovo, setModalNovo] = useState(false);
+  const [mostrarInativas, setMostrarInativas] = useState(false);
 
   const carregar = async () => {
     setLoading(true);
     try {
       const [resP, resC] = await Promise.all([
-        pessoasApi.listar(),
+        pessoasApi.listar(mostrarInativas),
         contasApi.listar()
       ]);
       setLista(resP.data);
@@ -985,43 +1445,73 @@ export default function Pessoas() {
 
   useEffect(() => {
     carregar();
-  }, []);
+  }, [mostrarInativas]);
 
-  const totalPendente = lista.reduce((acc, p) => acc + p.saldo_devedor, 0);
+  const totalPendente = lista.reduce((acc, p) => acc + (p.saldo_devedor || 0), 0);
 
   return (
     <div className="space-y-6">
       <div className="page-heading">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-extrabold text-gray-900 tracking-tight">Pessoas & Fechamentos</h1>
-          <p className="text-gray-500 text-sm mt-0.5">
-            Total a receber de todos: <strong className="text-rose-600">{fmt(totalPendente)}</strong>
+          <h1 className="text-2xl sm:text-3xl font-extrabold text-[var(--ink)] tracking-tight">Pessoas & Fechamentos</h1>
+          <p className="text-[var(--muted)] text-sm mt-0.5">
+            {mostrarInativas ? (
+              'Pessoas removidas/arquivadas — restaure com 1 clique mantendo histórico e link'
+            ) : (
+              <>Total a receber de todos: <strong className="text-rose-500">{fmt(totalPendente)}</strong></>
+            )}
           </p>
         </div>
-        <button onClick={() => setModalNovo(true)} className="btn-primary text-sm shadow-md shadow-blue-600/20">
-          <Plus size={18} /> Nova Pessoa
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            className="btn-secondary text-sm"
+            disabled={loading}
+            aria-pressed={mostrarInativas}
+            onClick={() => {
+              setLista([]);
+              setMostrarInativas(!mostrarInativas);
+            }}
+          >
+            {mostrarInativas ? 'Ver pessoas ativas' : 'Ver pessoas removidas'}
+          </button>
+          <button onClick={() => setModalNovo(true)} className="btn-primary text-sm shadow-md shadow-blue-600/20">
+            <Plus size={18} /> Nova Pessoa
+          </button>
+        </div>
       </div>
 
       {loading ? (
-        <div className="flex items-center justify-center h-64 text-gray-400 text-sm">Carregando pessoas...</div>
+        <div className="flex items-center justify-center h-64 text-[var(--muted)] text-sm">Carregando pessoas...</div>
       ) : lista.length === 0 ? (
         <div className="card text-center py-16">
-          <div className="w-14 h-14 bg-emerald-50 text-emerald-600 rounded-2xl flex items-center justify-center mx-auto mb-3">
+          <div className="w-14 h-14 bg-emerald-500/10 text-emerald-500 rounded-2xl flex items-center justify-center mx-auto mb-3">
             <Users size={28} />
           </div>
-          <h3 className="font-bold text-gray-900 text-lg">Nenhuma pessoa cadastrada</h3>
-          <p className="text-gray-400 text-sm max-w-sm mx-auto mt-1 mb-5">
-            Cadastre as pessoas que usam seus cartões (Thais, Luane, Alexandre...) para controlar saldos e gerar fechamentos em PDF.
-          </p>
-          <button onClick={() => setModalNovo(true)} className="btn-primary text-sm">
-            Cadastrar Primeira Pessoa
-          </button>
+          <h3 className="font-bold text-[var(--ink)] text-lg">
+            {mostrarInativas ? 'Nenhuma pessoa removida' : 'Nenhuma pessoa cadastrada'}
+          </h3>
+          {!mostrarInativas && (
+            <>
+              <p className="text-[var(--muted)] text-sm max-w-sm mx-auto mt-1 mb-5">
+                Cadastre as pessoas que usam seus cartões (Thais, Luane, Alessandra...) para controlar saldos e gerar fechamentos em PDF.
+              </p>
+              <button onClick={() => setModalNovo(true)} className="btn-primary text-sm">
+                Cadastrar Primeira Pessoa
+              </button>
+            </>
+          )}
         </div>
       ) : (
         <div className="space-y-4">
           {lista.map(p => (
-            <CardPessoa key={p.id} pessoa={p} contas={contas} onRefresh={carregar} />
+            <CardPessoa
+              key={p.id}
+              pessoa={p}
+              contas={contas}
+              modoInativas={mostrarInativas}
+              onRefresh={carregar}
+            />
           ))}
         </div>
       )}

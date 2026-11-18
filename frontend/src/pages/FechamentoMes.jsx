@@ -502,9 +502,7 @@ export default function FechamentoMes() {
               <div>
                 <div className="h-40 rounded-2xl mb-4 overflow-hidden shadow-lg">
                   <CardArtwork
-                    brand={c.bandeira}
-                    bank={c.nome}
-                    holder={(usuario?.nome || 'ADMINISTRAÇÃO FINANCEIRA').toUpperCase()}
+                    cartao={c}
                     className="w-full h-full"
                   />
                 </div>

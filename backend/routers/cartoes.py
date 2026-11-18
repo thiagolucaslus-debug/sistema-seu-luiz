@@ -138,6 +138,7 @@ def faturas_cartao(id: int, meses_atras: int = 6, meses_frente: int = 6, db: Ses
             models.Lancamento.cartao_id == id,
             models.Parcela.mes == m,
             models.Parcela.ano == a,
+            models.Parcela.status != "cancelado",
             models.Lancamento.cancelado == False
         ).order_by(models.Lancamento.data_lancamento.asc()).all()
 
@@ -152,8 +153,11 @@ def faturas_cartao(id: int, meses_atras: int = 6, meses_frente: int = 6, db: Ses
                 "valor": p.valor,
                 "status": p.status,
                 "pessoa": l.pessoa.nome if l.pessoa else "Você",
+                "pessoa_foto": l.pessoa.foto_path if l.pessoa else None,
+                "pessoa_cor": l.pessoa.cor if l.pessoa else None,
                 "modulo": l.modulo.nome if l.modulo else None,
-                "data_compra": str(l.data_lancamento)
+                "data_compra": str(l.data_lancamento),
+                "data_lancamento": str(l.data_lancamento),
             })
 
         faturas.append({
@@ -166,7 +170,8 @@ def faturas_cartao(id: int, meses_atras: int = 6, meses_frente: int = 6, db: Ses
             "pago": info["fatura_paga"],
             "valor_pago": info["valor_pago_fatura"],
             "data_pagamento": info["data_pagamento_fatura"],
-            "itens": itens
+            "itens": itens,
+            "lancamentos": itens,
         })
 
     return {

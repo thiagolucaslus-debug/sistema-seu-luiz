@@ -232,20 +232,17 @@ select option {
   isolation: isolate;
   overflow: hidden;
   color: #fff;
-  background: linear-gradient(145deg, var(--issuer), color-mix(in srgb, var(--issuer) 59%, #111827));
+  background: linear-gradient(145deg, var(--issuer), color-mix(in srgb, var(--issuer) 60%, #0f172a));
   border-radius: .85rem;
   padding: 8%;
   box-shadow: inset 0 0 0 1px #ffffff38, 0 9px 18px -11px #15283cb0;
 }
 .card-art::before { content: ''; z-index: -1; position: absolute; width: 86%; aspect-ratio: 1; left: 47%; top: -30%; transform: rotate(-30deg); border-radius: 31%; border: 1px solid #ffffff24; box-shadow: 0 0 0 17px #ffffff0e, 0 0 0 33px #ffffff0b; }
-.card-art[data-issuer='atacadao'] { background: linear-gradient(146deg, #fee64c 4%, #ffbf17 56%, #ee7411); color: #62300b; }
-.card-art[data-issuer='atacadao'] .card-art__brand { color: #235c29; font-style: italic; font-weight: 900; }
-.card-art[data-issuer='coop'] { background: linear-gradient(146deg, #29477d, #142753 75%); box-shadow: inset 0 -3px #df2f43, 0 9px 18px -11px #15283cb0; }
+.card-art[data-issuer='atacadao'] .card-art__brand { color: #fff; font-style: italic; font-weight: 900; text-shadow: 0 1px 3px rgba(0,0,0,.35); }
+.card-art[data-issuer='coop'] { box-shadow: inset 0 -3px #df2f43, inset 0 0 0 1px #ffffff38, 0 9px 18px -11px #15283cb0; }
 .card-art[data-issuer='coop'] .card-art__brand { color: #fff; border-bottom: 2px solid #ff5c66; }
-.card-art[data-issuer='nubank'] { background: linear-gradient(146deg, #9833d5, #7316ab 65%, #552586); }
 .card-art[data-issuer='nubank'] .card-art__brand { font-size: 2rem; font-style: italic; letter-spacing: -.12em; }
-.card-art[data-issuer='itau'] { background: linear-gradient(146deg, #ff801d, #d6490e 92%); }
-.card-art[data-issuer='itau'] .card-art__brand { background: #002a68; border-radius: .3rem; padding: .17rem .35rem; color: #fff; }
+.card-art[data-issuer='itau'] .card-art__brand { background: rgba(0, 26, 72, 0.55); border: 1px solid rgba(255, 255, 255, 0.28); border-radius: .35rem; padding: .17rem .4rem; color: #fff; }
 .card-art.card-art--official { display: grid; place-items: center; padding: 0; }
 .card-art--official img { position: absolute; max-width: none; width: 135%; height: auto; }
 .card-art.card-art--official[data-issuer='atacadao'] { background: #da7719; }

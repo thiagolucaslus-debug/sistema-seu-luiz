@@ -31,6 +31,8 @@ def calcular_saldo_pessoa_mes(db: Session, pessoa_id: int, mes: int, ano: int) -
         is_reembolso = (lanc.tipo == "reembolso_pessoa")
 
         for parcela in lanc.parcelas:
+            if parcela.status == "cancelado":
+                continue
             # Verifica se pertence a mês anterior
             if parcela.ano < ano or (parcela.ano == ano and parcela.mes < mes):
                 if parcela.status == "pendente":
@@ -81,6 +83,7 @@ def calcular_total_fatura_cartao(db: Session, cartao_id: int, mes: int, ano: int
         models.Lancamento.cartao_id == cartao_id,
         models.Parcela.mes == mes,
         models.Parcela.ano == ano,
+        models.Parcela.status != "cancelado",
         models.Lancamento.cancelado == False
     ).all()
 

@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import { solicitacoes, mediaUrl } from '../api/client';
 import Avatar from '../components/Avatar';
+import CardArtwork from '../components/CardArtwork';
+import { getCardBrand } from '../components/cardBrand';
 import {
   CreditCard, Upload, CheckCircle2, AlertCircle, ShoppingBag,
   HandCoins, Calendar, Camera, ArrowRight, ShieldCheck
@@ -238,6 +240,21 @@ export default function LancarCompra() {
                   </option>
                 ))}
               </select>
+              {(() => {
+                const cSel = cartoes.find(c => String(c.id) === String(cartaoId));
+                if (!cSel) return null;
+                const bCor = getCardBrand(cSel.nome, cSel.cor).color;
+                return (
+                  <div className="mt-2 flex items-center gap-2.5 text-xs text-slate-300">
+                    <CardArtwork cartao={cSel} compact />
+                    <span
+                      className="w-2.5 h-2.5 rounded-full shrink-0"
+                      style={{ backgroundColor: bCor }}
+                    />
+                    <span className="font-semibold">{cSel.nome}</span>
+                  </div>
+                );
+              })()}
             </div>
           )}
 

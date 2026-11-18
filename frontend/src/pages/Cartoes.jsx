@@ -1,42 +1,162 @@
 import { useState, useEffect } from 'react';
 import { cartoes as cartoesApi, contas as contasApi } from '../api/client';
 import {
-  CreditCard, Plus, CheckCircle,
-  Calendar, X, Trash2, ArrowLeft, ArrowUpRight, DollarSign, Receipt
+  CreditCard, Plus, CheckCircle, Check, Palette, Edit2, RotateCcw,
+  Calendar, X, Trash2, ArrowLeft, ArrowUpRight, DollarSign
 } from 'lucide-react';
 import CardArtwork from '../components/CardArtwork';
-import { getCardBrand } from '../components/cardBrand';
+import {
+  getCardBrand,
+  CARD_COLOR_PALETTE,
+  suggestIssuerColor,
+  normalizeHexColor
+} from '../components/cardBrand';
 import Avatar from '../components/Avatar';
 
 function fmt(val) {
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val || 0);
 }
 
-function ModalNovoCartao({ onClose, onSaved }) {
+function SeletorPaletaCorCartao({ form, onChangeCor }) {
+  const corAtual = normalizeHexColor(form.cor) || '#8b5cf6';
+
+  return (
+    <div className="space-y-3 p-3.5 rounded-2xl bg-[var(--raised)] border border-[var(--line)]">
+      <div className="flex items-center justify-between gap-2">
+        <label className="label mb-0 flex items-center gap-2">
+          <Palette size={14} className="text-blue-500" />
+          <span>Cor do Cartão e Indicador</span>
+        </label>
+        <span className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full text-xs font-mono font-bold bg-[var(--surface)] border border-[var(--line)] text-[var(--ink)]">
+          <span
+            className="w-3.5 h-3.5 rounded-full shrink-0 ring-2 ring-white/30 shadow-sm"
+            style={{ backgroundColor: corAtual }}
+          />
+          {corAtual.toUpperCase()}
+        </span>
+      </div>
+
+      {/* Pré-visualização ao vivo do Cartão com a exata cor escolhida */}
+      <div className="w-52 max-w-full mx-auto rounded-xl overflow-hidden shadow-lg transition-all">
+        <CardArtwork
+          cartao={{
+            nome: form.nome || 'Meu Cartão',
+            bandeira: form.bandeira || 'Visa',
+            cor: corAtual,
+          }}
+        />
+      </div>
+
+      {/* Grade de cores rápidas da paleta */}
+      <div>
+        <span className="text-[11px] text-[var(--muted)] font-medium block mb-1.5">
+          Toque em uma cor da paleta ou escolha livremente abaixo:
+        </span>
+        <div className="grid grid-cols-8 gap-2">
+          {CARD_COLOR_PALETTE.map((swatch) => {
+            const ativo = corAtual.toLowerCase() === swatch.hex.toLowerCase();
+            return (
+              <button
+                key={swatch.hex}
+                type="button"
+                onClick={() => onChangeCor(swatch.hex)}
+                title={`${swatch.label} (${swatch.hex.toUpperCase()})`}
+                aria-label={`Escolher cor ${swatch.label}`}
+                aria-pressed={ativo}
+                className={`w-full aspect-square rounded-xl flex items-center justify-center transition-transform hover:scale-110 focus:outline-none ${
+                  ativo ? 'ring-2 ring-offset-2 ring-blue-500 scale-105 shadow-md' : 'border border-white/20'
+                }`}
+                style={{ backgroundColor: swatch.hex }}
+              >
+                {ativo && <Check size={14} className="text-white drop-shadow" />}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Seletor livre (<input type="color">) sincronizado com o indicador e com o cartão */}
+      <label className="flex items-center justify-between gap-3 p-2.5 rounded-xl bg-[var(--surface)] border border-[var(--line)] cursor-pointer hover-surface transition-colors">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <span
+            className="w-7 h-7 rounded-lg shrink-0 border border-white/30 shadow-inner"
+            style={{ backgroundColor: corAtual }}
+          />
+          <div className="min-w-0">
+            <span className="text-xs font-bold text-[var(--ink)] block">Paleta de Cores Completa</span>
+            <span className="text-[11px] text-[var(--muted)] block truncate">
+              Clique aqui para ajustar qualquer tom personalizado
+            </span>
+          </div>
+        </div>
+        <input
+          type="color"
+          className="w-10 h-9 rounded-lg cursor-pointer border-0 bg-transparent shrink-0"
+          value={corAtual}
+          onChange={(e) => onChangeCor(e.target.value)}
+        />
+      </label>
+    </div>
+  );
+}
+
+function ModalCartaoForm({ cartaoInicial = null, onClose, onSaved }) {
+  const isEdit = Boolean(cartaoInicial);
+  const corInicial = cartaoInicial
+    ? (normalizeHexColor(cartaoInicial.cor) || getCardBrand(cartaoInicial.nome, cartaoInicial.cor).color)
+    : '#8b5cf6';
+
   const [form, setForm] = useState({
-    nome: '',
-    bandeira: 'Visa',
-    dia_fechamento: 20,
-    dia_vencimento: 27,
-    limite: '',
-    cor: '#8B5CF6'
+    nome: cartaoInicial?.nome || '',
+    bandeira: cartaoInicial?.bandeira || 'Visa',
+    dia_fechamento: cartaoInicial?.dia_fechamento ?? 20,
+    dia_vencimento: cartaoInicial?.dia_vencimento ?? 27,
+    limite: cartaoInicial?.limite ? String(cartaoInicial.limite) : '',
+    cor: corInicial,
   });
+  const [corEscolhidaManualmente, setCorEscolhidaManualmente] = useState(isEdit);
   const [submitting, setSubmitting] = useState(false);
+
+  const handleNomeChange = (novoNome) => {
+    setForm((prev) => {
+      let proximaCor = prev.cor;
+      if (!corEscolhidaManualmente) {
+        const sugerida = suggestIssuerColor(novoNome);
+        if (sugerida) proximaCor = sugerida;
+      }
+      return { ...prev, nome: novoNome, cor: proximaCor };
+    });
+  };
+
+  const handleCorChange = (novaCor) => {
+    setCorEscolhidaManualmente(true);
+    setForm((prev) => ({ ...prev, cor: novaCor }));
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setSubmitting(true);
     try {
-      await cartoesApi.criar({
-        ...form,
-        dia_fechamento: parseInt(form.dia_fechamento),
-        dia_vencimento: parseInt(form.dia_vencimento),
-        limite: parseFloat(form.limite) || 0.0
-      });
+      const payload = {
+        nome: form.nome,
+        bandeira: form.bandeira,
+        dia_fechamento: parseInt(form.dia_fechamento, 10),
+        dia_vencimento: parseInt(form.dia_vencimento, 10),
+        limite: parseFloat(form.limite) || 0.0,
+        cor: normalizeHexColor(form.cor) || '#8b5cf6',
+      };
+      if (isEdit) {
+        await cartoesApi.atualizar(cartaoInicial.id, payload);
+      } else {
+        await cartoesApi.criar(payload);
+      }
       onSaved();
       onClose();
     } catch (err) {
-      alert('Erro ao cadastrar cartão: ' + (err.response?.data?.detail || err.message));
+      alert(
+        `Erro ao ${isEdit ? 'atualizar' : 'cadastrar'} cartão: ` +
+          (err.response?.data?.detail || err.message)
+      );
     } finally {
       setSubmitting(false);
     }
@@ -44,10 +164,18 @@ function ModalNovoCartao({ onClose, onSaved }) {
 
   return (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <div className="bg-[var(--surface)] text-[var(--ink)] rounded-3xl shadow-2xl w-full max-w-md max-h-[90dvh] overflow-y-auto p-6 border border-[var(--line)]">
+      <div className="bg-[var(--surface)] text-[var(--ink)] rounded-3xl shadow-2xl w-full max-w-md max-h-[92dvh] overflow-y-auto p-6 border border-[var(--line)]">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-bold text-[var(--ink)]">Cadastrar Novo Cartão</h2>
-          <button onClick={onClose} className="p-1 text-[var(--muted)] hover:text-[var(--ink)] rounded-lg"><X size={20} /></button>
+          <h2 className="text-lg font-bold text-[var(--ink)]">
+            {isEdit ? `Editar Cartão — ${cartaoInicial.nome}` : 'Cadastrar Novo Cartão'}
+          </h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1 text-[var(--muted)] hover:text-[var(--ink)] rounded-lg"
+          >
+            <X size={20} />
+          </button>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -56,9 +184,9 @@ function ModalNovoCartao({ onClose, onSaved }) {
             <input
               type="text"
               className="input"
-              placeholder="Ex.: Atacadão, Nubank, Itaú ou Coop"
+              placeholder="Ex.: Itaú 7467, Atacadão, Nubank ou Coop"
               value={form.nome}
-              onChange={e => setForm({ ...form, nome: e.target.value })}
+              onChange={(e) => handleNomeChange(e.target.value)}
               required
             />
           </div>
@@ -69,7 +197,7 @@ function ModalNovoCartao({ onClose, onSaved }) {
               <select
                 className="input font-medium"
                 value={form.bandeira}
-                onChange={e => setForm({ ...form, bandeira: e.target.value })}
+                onChange={(e) => setForm({ ...form, bandeira: e.target.value })}
               >
                 <option value="Visa">Visa</option>
                 <option value="Mastercard">Mastercard</option>
@@ -87,7 +215,7 @@ function ModalNovoCartao({ onClose, onSaved }) {
                 className="input"
                 placeholder="0,00"
                 value={form.limite}
-                onChange={e => setForm({ ...form, limite: e.target.value })}
+                onChange={(e) => setForm({ ...form, limite: e.target.value })}
               />
             </div>
           </div>
@@ -101,7 +229,7 @@ function ModalNovoCartao({ onClose, onSaved }) {
                 max="31"
                 className="input"
                 value={form.dia_fechamento}
-                onChange={e => setForm({ ...form, dia_fechamento: e.target.value })}
+                onChange={(e) => setForm({ ...form, dia_fechamento: e.target.value })}
                 required
               />
             </div>
@@ -113,29 +241,20 @@ function ModalNovoCartao({ onClose, onSaved }) {
                 max="31"
                 className="input"
                 value={form.dia_vencimento}
-                onChange={e => setForm({ ...form, dia_vencimento: e.target.value })}
+                onChange={(e) => setForm({ ...form, dia_vencimento: e.target.value })}
                 required
               />
             </div>
           </div>
 
-          <div>
-            <label className="label">Cor de Identificação</label>
-            <div className="flex items-center gap-3">
-              <input
-                type="color"
-                className="w-12 h-10 rounded-lg cursor-pointer border border-[var(--line)] bg-transparent"
-                value={form.cor}
-                onChange={e => setForm({ ...form, cor: e.target.value })}
-              />
-              <span className="text-xs text-[var(--muted)] font-mono uppercase">{form.cor}</span>
-            </div>
-          </div>
+          <SeletorPaletaCorCartao form={form} onChangeCor={handleCorChange} />
 
           <div className="flex gap-2 justify-end pt-3 border-t border-[var(--line)]">
-            <button type="button" onClick={onClose} className="btn-secondary">Cancelar</button>
+            <button type="button" onClick={onClose} className="btn-secondary">
+              Cancelar
+            </button>
             <button type="submit" disabled={submitting} className="btn-primary">
-              {submitting ? 'Salvando...' : 'Salvar Cartão'}
+              {submitting ? 'Salvando...' : isEdit ? 'Salvar Alterações' : 'Salvar Cartão'}
             </button>
           </div>
         </form>
@@ -244,11 +363,12 @@ function ModalPagarFatura({ cartao, fatura, contas, onClose, onSaved }) {
 // ==========================================
 // PÁGINA COMPLETA EXCLUSIVA DO CARTÃO
 // ==========================================
-function DetalheCartao({ cartao, contas, onVoltar, onRefresh }) {
+function DetalheCartao({ cartao, contas, onVoltar, onEditar, onRefresh }) {
   const [faturasData, setFaturasData] = useState(null);
   const [loadingFaturas, setLoadingFaturas] = useState(true);
   const [faturaIdx, setFaturaIdx] = useState(0);
   const [modalPagar, setModalPagar] = useState(null);
+  const brand = getCardBrand(cartao.nome, cartao.cor);
 
   const carregarFaturas = async () => {
     setLoadingFaturas(true);
@@ -269,6 +389,7 @@ function DetalheCartao({ cartao, contas, onVoltar, onRefresh }) {
   }, [cartao.id]);
 
   const faturaSelecionada = faturasData?.faturas?.[faturaIdx];
+  const itensFatura = faturaSelecionada?.lancamentos || faturaSelecionada?.itens || [];
   const limiteDisponivel = cartao.limite ? Math.max(0, cartao.limite - (cartao.fatura_mes_atual?.total || 0)) : null;
   const percUsado = cartao.limite > 0 ? Math.min(100, Math.round(((cartao.fatura_mes_atual?.total || 0) / cartao.limite) * 100)) : 0;
 
@@ -282,9 +403,19 @@ function DetalheCartao({ cartao, contas, onVoltar, onRefresh }) {
         >
           <ArrowLeft size={16} /> Voltar para todos os cartões
         </button>
-        <span className="badge-blue text-xs py-1 px-3">
-          {cartao.bandeira}
-        </span>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onEditar(cartao)}
+            className="btn-secondary text-xs py-2 px-3 flex items-center gap-1.5"
+          >
+            <Palette size={15} style={{ color: brand.color }} />
+            <span>Mudar Cor / Editar Cartão</span>
+          </button>
+          <span className="badge-blue text-xs py-1 px-3">
+            {cartao.bandeira}
+          </span>
+        </div>
       </div>
 
       {/* Banner de Destaque do Cartão */}
@@ -296,7 +427,14 @@ function DetalheCartao({ cartao, contas, onVoltar, onRefresh }) {
 
           <div className="flex-1 w-full space-y-4">
             <div>
-              <h2 className="text-2xl sm:text-3xl font-black text-[var(--ink)] tracking-tight">{cartao.nome}</h2>
+              <div className="flex items-center gap-2.5">
+                <span
+                  className="w-4 h-4 rounded-full shrink-0 ring-2 ring-white/25 shadow"
+                  style={{ backgroundColor: brand.color }}
+                  title={`Cor do cartão: ${brand.color}`}
+                />
+                <h2 className="text-2xl sm:text-3xl font-black text-[var(--ink)] tracking-tight">{cartao.nome}</h2>
+              </div>
               <div className="flex flex-wrap items-center gap-3 text-xs text-[var(--muted)] mt-1">
                 <span className="inline-flex items-center gap-1 font-medium">
                   <Calendar size={14} className="text-blue-500" /> Fecha todo dia <strong>{cartao.dia_fechamento}</strong>
@@ -402,7 +540,7 @@ function DetalheCartao({ cartao, contas, onVoltar, onRefresh }) {
                       Fatura de {faturaSelecionada.nome_mes}
                     </h4>
                     <p className="text-xs text-[var(--muted)]">
-                      {faturaSelecionada.lancamentos?.length || 0} compras faturadas neste mês
+                      {itensFatura.length} compras faturadas neste mês
                     </p>
                   </div>
 
@@ -429,42 +567,49 @@ function DetalheCartao({ cartao, contas, onVoltar, onRefresh }) {
                 </div>
 
                 {/* Lista de Compras na Fatura */}
-                {faturaSelecionada.lancamentos?.length === 0 ? (
+                {itensFatura.length === 0 ? (
                   <p className="text-sm text-[var(--muted)] text-center py-8 italic">
                     Nenhuma compra lançada nesta fatura.
                   </p>
                 ) : (
                   <div className="space-y-2">
-                    {faturaSelecionada.lancamentos.map((item, i) => (
-                      <div
-                        key={i}
-                        className="flex flex-wrap sm:flex-nowrap items-center justify-between gap-3 p-3.5 rounded-xl bg-[var(--surface)] border border-[var(--line)] hover-surface transition-all"
-                      >
-                        <div className="flex items-center gap-3 min-w-0">
-                          <Avatar nome={item.pessoa || 'Você'} foto={item.pessoa_foto} cor={item.pessoa_cor} className="w-8 h-8 text-xs shrink-0" />
-                          <div className="min-w-0">
-                            <span className="font-bold text-[var(--ink)] text-sm block truncate">{item.descricao}</span>
-                            <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--muted)] mt-0.5">
-                              <span className="font-semibold text-blue-500">Parcela {item.parcela}</span>
-                              <span>•</span>
-                              <span>{item.pessoa || 'Você'}</span>
-                              <span>•</span>
-                              <span>{new Date(item.data_lancamento + 'T00:00:00').toLocaleDateString('pt-BR')}</span>
-                              {item.modulo && <span>• 📁 {item.modulo}</span>}
+                    {itensFatura.map((item, i) => {
+                      const dataCompraStr = item.data_lancamento || item.data_compra;
+                      return (
+                        <div
+                          key={i}
+                          className="flex flex-wrap sm:flex-nowrap items-center justify-between gap-3 p-3.5 rounded-xl bg-[var(--surface)] border border-[var(--line)] hover-surface transition-all"
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <Avatar nome={item.pessoa || 'Você'} foto={item.pessoa_foto} cor={item.pessoa_cor} className="w-8 h-8 text-xs shrink-0" />
+                            <div className="min-w-0">
+                              <span className="font-bold text-[var(--ink)] text-sm block truncate">{item.descricao}</span>
+                              <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--muted)] mt-0.5">
+                                <span className="font-semibold text-blue-500">Parcela {item.parcela}</span>
+                                <span>•</span>
+                                <span>{item.pessoa || 'Você'}</span>
+                                {dataCompraStr && (
+                                  <>
+                                    <span>•</span>
+                                    <span>{new Date(dataCompraStr + 'T00:00:00').toLocaleDateString('pt-BR')}</span>
+                                  </>
+                                )}
+                                {item.modulo && <span>• 📁 {item.modulo}</span>}
+                              </div>
                             </div>
                           </div>
-                        </div>
 
-                        <div className="text-right shrink-0 ml-auto sm:ml-0">
-                          <span className="text-base font-black text-[var(--ink)] block">
-                            {fmt(item.valor)}
-                          </span>
-                          <span className={`text-[10px] font-semibold uppercase ${item.status === 'pago' ? 'text-emerald-500' : 'text-[var(--muted)]'}`}>
-                            {item.status === 'pago' ? 'Quitado' : 'A Vencer'}
-                          </span>
+                          <div className="text-right shrink-0 ml-auto sm:ml-0">
+                            <span className="text-base font-black text-[var(--ink)] block">
+                              {fmt(item.valor)}
+                            </span>
+                            <span className={`text-[10px] font-semibold uppercase ${item.status === 'pago' ? 'text-emerald-500' : 'text-[var(--muted)]'}`}>
+                              {item.status === 'pago' ? 'Quitado' : 'A Vencer'}
+                            </span>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -489,7 +634,7 @@ function DetalheCartao({ cartao, contas, onVoltar, onRefresh }) {
 // ==========================================
 // CARD COMPACTO NA LISTAGEM GERAL
 // ==========================================
-function CardCartao({ cartao, onClickCard, onRemover }) {
+function CardCartao({ cartao, onClickCard, onEditar, onRemover, onRestaurar }) {
   const brand = getCardBrand(cartao.nome, cartao.cor);
 
   return (
@@ -503,7 +648,14 @@ function CardCartao({ cartao, onClickCard, onRemover }) {
         </div>
 
         <div className="flex items-center justify-between gap-2">
-          <h3 className="font-bold text-lg text-[var(--ink)] truncate">{cartao.nome}</h3>
+          <div className="flex items-center gap-2 min-w-0">
+            <span
+              className="w-3.5 h-3.5 rounded-full shrink-0 ring-2 ring-white/20 shadow-sm"
+              style={{ backgroundColor: brand.color }}
+              title={`Cor do cartão: ${brand.color}`}
+            />
+            <h3 className="font-bold text-lg text-[var(--ink)] truncate">{cartao.nome}</h3>
+          </div>
           <span className="badge-blue shrink-0">{cartao.bandeira}</span>
         </div>
 
@@ -525,19 +677,46 @@ function CardCartao({ cartao, onClickCard, onRemover }) {
             Ver Histórico e Faturas <ArrowUpRight size={14} />
           </span>
 
-          {cartao.ativo !== false && (
+          <div className="flex items-center gap-1">
             <button
               type="button"
-              className="p-1.5 text-[var(--muted)] hover:text-rose-500 hover:bg-rose-500/10 rounded-lg transition-colors"
+              className="p-1.5 text-[var(--muted)] hover:text-blue-500 hover:bg-blue-500/10 rounded-lg transition-colors inline-flex items-center gap-1 text-xs font-semibold"
               onClick={(e) => {
                 e.stopPropagation();
-                onRemover(cartao);
+                onEditar(cartao);
               }}
-              title="Remover Cartão"
+              title="Mudar Cor / Editar Cartão"
             >
-              <Trash2 size={15} />
+              <Palette size={15} style={{ color: brand.color }} />
+              <Edit2 size={13} />
             </button>
-          )}
+
+            {cartao.ativo !== false ? (
+              <button
+                type="button"
+                className="p-1.5 text-[var(--muted)] hover:text-rose-500 hover:bg-rose-500/10 rounded-lg transition-colors"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRemover(cartao);
+                }}
+                title="Remover Cartão"
+              >
+                <Trash2 size={15} />
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="px-2 py-1 text-xs font-bold text-emerald-500 hover:bg-emerald-500/10 rounded-lg transition-colors inline-flex items-center gap-1"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRestaurar(cartao);
+                }}
+                title="Restaurar Cartão"
+              >
+                <RotateCcw size={13} /> Restaurar
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </article>
@@ -553,6 +732,7 @@ export default function Cartoes() {
   const [loading, setLoading] = useState(true);
   const [erro, setErro] = useState('');
   const [modalNovo, setModalNovo] = useState(false);
+  const [cartaoEditando, setCartaoEditando] = useState(null);
   const [arquivados, setArquivados] = useState(false);
   const [cartaoSelecionado, setCartaoSelecionado] = useState(null);
 
@@ -592,14 +772,33 @@ export default function Cartoes() {
     }
   };
 
+  const handleRestaurar = async (c) => {
+    try {
+      await cartoesApi.atualizar(c.id, { ativo: true });
+      carregar();
+    } catch (error) {
+      alert(error.response?.data?.detail || 'Erro ao restaurar cartão.');
+    }
+  };
+
   if (cartaoSelecionado) {
     return (
-      <DetalheCartao
-        cartao={cartaoSelecionado}
-        contas={contas}
-        onVoltar={() => setCartaoSelecionado(null)}
-        onRefresh={carregar}
-      />
+      <>
+        <DetalheCartao
+          cartao={cartaoSelecionado}
+          contas={contas}
+          onVoltar={() => setCartaoSelecionado(null)}
+          onEditar={(c) => setCartaoEditando(c)}
+          onRefresh={carregar}
+        />
+        {cartaoEditando && (
+          <ModalCartaoForm
+            cartaoInicial={cartaoEditando}
+            onClose={() => setCartaoEditando(null)}
+            onSaved={carregar}
+          />
+        )}
+      </>
     );
   }
 
@@ -609,7 +808,9 @@ export default function Cartoes() {
       <div className="page-heading">
         <div>
           <h1 className="text-2xl sm:text-3xl font-extrabold text-[var(--ink)] tracking-tight">Cartões de Crédito</h1>
-          <p className="text-[var(--muted)] text-sm mt-0.5">Clique em qualquer cartão para ver o histórico e faturas completas</p>
+          <p className="text-[var(--muted)] text-sm mt-0.5">
+            Personalize a cor de cada cartão na paleta e acompanhe o histórico de faturas
+          </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <button
@@ -645,7 +846,7 @@ export default function Cartoes() {
           {!arquivados && (
             <>
               <p className="text-[var(--muted)] text-sm max-w-sm mx-auto mt-1 mb-5">
-                Cadastre seus cartões (Itaú, Nubank, Atacadão, Coop...) com dia de fechamento e limite.
+                Cadastre seus cartões (Itaú, Nubank, Atacadão, Coop...) com cor personalizada, dia de fechamento e limite.
               </p>
               <button onClick={() => setModalNovo(true)} className="btn-primary text-sm">
                 Cadastrar Primeiro Cartão
@@ -660,14 +861,24 @@ export default function Cartoes() {
               key={c.id}
               cartao={c}
               onClickCard={setCartaoSelecionado}
+              onEditar={setCartaoEditando}
               onRemover={handleRemover}
+              onRestaurar={handleRestaurar}
             />
           ))}
         </div>
       )}
 
       {modalNovo && (
-        <ModalNovoCartao onClose={() => setModalNovo(false)} onSaved={carregar} />
+        <ModalCartaoForm onClose={() => setModalNovo(false)} onSaved={carregar} />
+      )}
+
+      {cartaoEditando && (
+        <ModalCartaoForm
+          cartaoInicial={cartaoEditando}
+          onClose={() => setCartaoEditando(null)}
+          onSaved={carregar}
+        />
       )}
     </div>
   );

@@ -90,8 +90,12 @@ def _collect_user_upload_filenames(db: Session, usuario: models.Usuario) -> set[
     for rel in rels:
         if isinstance(rel, str):
             norm = rel.strip().replace("\\", "/")
-            if norm.startswith("/uploads/") or norm.startswith("uploads/"):
-                fname = Path(norm.lstrip("/").removeprefix("uploads/")).name
+            if "/uploads/" in norm:
+                fname = Path(norm.split("/uploads/", 1)[1].split("?", 1)[0]).name
+                if fname and fname not in (".", ".."):
+                    names.add(fname)
+            elif norm.startswith("uploads/"):
+                fname = Path(norm.removeprefix("uploads/").split("?", 1)[0]).name
                 if fname and fname not in (".", ".."):
                     names.add(fname)
     return names

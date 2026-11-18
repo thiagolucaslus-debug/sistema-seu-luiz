@@ -114,7 +114,7 @@ export default function Relatorios() {
                     {bloco.itens.map((it, i) => (
                       <div key={i} className="flex items-center justify-between text-xs py-1 border-b border-gray-50 last:border-0">
                         <div className="flex min-w-0 items-center gap-2 mr-2">
-                          {it.cartao && <CardArtwork cartao={{ nome: it.cartao }} compact />}
+                          {it.cartao && <CardArtwork cartao={{ nome: it.cartao, cor: it.cartao_cor, bandeira: it.cartao_bandeira }} compact />}
                           <div className="min-w-0">
                           <p className="font-medium text-gray-800 truncate">{it.descricao}</p>
                           <p className="text-[10px] text-gray-400">

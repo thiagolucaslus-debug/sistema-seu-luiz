@@ -40,6 +40,8 @@ def gerar_pdf_fechamento(db: Session, pessoa_id: int, mes: int, ano: int, nome_s
 
     for lanc in lancamentos_query:
         for parcela in lanc.parcelas:
+            if parcela.status == "cancelado":
+                continue
             if parcela.mes == mes and parcela.ano == ano:
                 origem = lanc.cartao.nome if lanc.cartao else ("Conta / Dinheiro" if lanc.conta else "Outro")
                 lancamentos_mes.append({
@@ -64,7 +66,7 @@ def gerar_pdf_fechamento(db: Session, pessoa_id: int, mes: int, ano: int, nome_s
     for lanc in lancamentos_query:
         for p in lanc.parcelas:
             if (p.ano > ano) or (p.ano == ano and p.mes > mes):
-                if p.status != "pago":
+                if p.status not in ("pago", "cancelado"):
                     origem = lanc.cartao.nome if lanc.cartao else ("Conta / Dinheiro" if lanc.conta else "Outro")
                     parcelas_futuras.append({
                         "data_ord": (p.ano, p.mes),

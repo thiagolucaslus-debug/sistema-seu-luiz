@@ -206,8 +206,14 @@ function ModalNovoLancamento({ cartoes, contas, pessoas, modulos, onClose, onSav
                 ))}
               </select>
               {cartaoSelecionado && (
-                <div className="mt-2 flex items-center gap-2 text-sm text-gray-600">
-                  <CardArtwork cartao={cartaoSelecionado} compact />{cartaoSelecionado.bandeira}
+                <div className="mt-2 flex items-center gap-2 text-sm text-[var(--muted)]">
+                  <CardArtwork cartao={cartaoSelecionado} compact />
+                  <span
+                    className="w-2.5 h-2.5 rounded-full shrink-0"
+                    style={{ backgroundColor: cartaoSelecionado.cor || '#8B5CF6' }}
+                  />
+                  <span className="font-semibold text-[var(--ink)]">{cartaoSelecionado.nome}</span>
+                  <span>• {cartaoSelecionado.bandeira}</span>
                 </div>
               )}
             </div>

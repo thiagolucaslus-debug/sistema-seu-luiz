@@ -18,7 +18,9 @@ export const mediaUrl = (path) => {
   if (path.startsWith('http')) {
     try {
       const url = new URL(path);
-      if (url.port === '8000') return url.pathname;
+      if (url.pathname.startsWith('/uploads/') && (url.port === '8000' || url.hostname === 'localhost' || url.hostname === '127.0.0.1')) {
+        return url.pathname;
+      }
     } catch (e) {}
     return path;
   }
@@ -75,7 +77,9 @@ export const contas = {
 };
 
 export const cartoes = {
-  listar: (params) => api.get('/cartoes/', { params }),
+  listar: (params) => api.get('/cartoes/', {
+    params: typeof params === 'boolean' ? { inativos: params } : params,
+  }),
   criar: (data) => api.post('/cartoes/', data),
   atualizar: (id, data) => api.put(`/cartoes/${id}`, data),
   deletar: (id) => api.delete(`/cartoes/${id}`),
@@ -84,9 +88,13 @@ export const cartoes = {
 };
 
 export const pessoas = {
-  listar: () => api.get('/pessoas/'),
+  listar: (params) => api.get('/pessoas/', {
+    params: typeof params === 'boolean' ? { inativas: params } : params,
+  }),
   criar: (data) => api.post('/pessoas/', data),
   atualizar: (id, data) => api.put(`/pessoas/${id}`, data),
+  restaurar: (id) => api.post(`/pessoas/${id}/restaurar`),
+  zerar: (id, data) => api.post(`/pessoas/${id}/zerar`, data),
   uploadFoto: (id, formData) => api.post(`/pessoas/${id}/foto`, formData, { headers: { 'Content-Type': 'multipart/form-data' } }),
   deletar: (id) => api.delete(`/pessoas/${id}`),
   extrato: (id) => api.get(`/pessoas/${id}/extrato`),

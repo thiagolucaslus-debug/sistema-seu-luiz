@@ -615,7 +615,13 @@ export default function Dashboard() {
                       <CardArtwork cartao={c} compact />
                     </div>
                     <div className="min-w-0">
-                      <p className="font-semibold text-[var(--ink)] text-sm truncate">{c.nome}</p>
+                      <p className="font-semibold text-[var(--ink)] text-sm truncate flex items-center gap-1.5">
+                        <span
+                          className="w-2.5 h-2.5 rounded-full shrink-0"
+                          style={{ backgroundColor: getCardBrand(c.nome, c.cor).color }}
+                        />
+                        <span className="truncate">{c.nome}</span>
+                      </p>
                       <p className="text-xs text-[var(--muted)]">Fatura de {mes}/{ano}</p>
                     </div>
                   </div>

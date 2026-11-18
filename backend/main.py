@@ -92,6 +92,7 @@ def ensure_schema_and_migrations() -> None:
                 )
 
     with Session(bind=engine) as session:
+        alterou_boot = False
         pessoas_sem_token = (
             session.query(models.Pessoa)
             .filter((models.Pessoa.token_acesso == None) | (models.Pessoa.token_acesso == ""))
@@ -99,7 +100,26 @@ def ensure_schema_and_migrations() -> None:
         )
         for p in pessoas_sem_token:
             p.token_acesso = secrets.token_urlsafe(12)
-        if pessoas_sem_token:
+            alterou_boot = True
+
+        # Normaliza eventuais URLs legadas (http://localhost:8000/uploads/...) para /uploads/...
+        for model_cls, attr_name in (
+            (models.Pessoa, "foto_path"),
+            (models.Usuario, "logo_path"),
+            (models.Modulo, "foto_path"),
+            (models.Lancamento, "comprovante_path"),
+            (models.SolicitacaoLancamento, "comprovante_path"),
+        ):
+            col = getattr(model_cls, attr_name)
+            for row in session.query(model_cls).filter(col != None).all():
+                raw_val = getattr(row, attr_name)
+                if isinstance(raw_val, str) and "/uploads/" in raw_val and not raw_val.startswith("/uploads/"):
+                    fname = os.path.basename(raw_val.replace("\\", "/").split("/uploads/", 1)[1].split("?", 1)[0])
+                    if fname and fname not in (".", ".."):
+                        setattr(row, attr_name, f"/uploads/{fname}")
+                        alterou_boot = True
+
+        if alterou_boot:
             session.commit()
 
 

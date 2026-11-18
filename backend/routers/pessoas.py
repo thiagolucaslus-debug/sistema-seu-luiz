@@ -38,20 +38,47 @@ class PagamentoPessoaRequest(BaseModel):
     forma: Literal["dinheiro", "pix", "transferencia", "abatimento", "outro"] | None = None
     outra_forma: Optional[str] = Field(default=None, max_length=100)
 
+
+class ZerarPessoaRequest(BaseModel):
+    modo: Literal["apagar_lancamentos", "abater_divida"] = "apagar_lancamentos"
+    escopo: Literal["tudo", "mes"] = "tudo"
+    mes: Optional[int] = Field(default=None, ge=1, le=12)
+    ano: Optional[int] = Field(default=None, ge=2000, le=2100)
+    limpar_pagamentos: bool = True
+
+
+def _normalizar_foto_relpath(fp: Optional[str]) -> Optional[str]:
+    if not fp or not isinstance(fp, str):
+        return fp
+    s = fp.strip().replace("\\", "/")
+    if "/uploads/" in s:
+        fname = os.path.basename(s.split("/uploads/", 1)[1].split("?", 1)[0])
+        if fname and fname not in (".", ".."):
+            return f"/uploads/{fname}"
+    return fp
+
+
 @router.get("/")
-def listar_pessoas(db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
+def listar_pessoas(inativas: bool = False, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
     hoje = date.today()
     pessoas = (
         db.query(models.Pessoa)
-        .filter(models.Pessoa.usuario_id == usuario.id, models.Pessoa.ativa == True)
+        .filter(
+            models.Pessoa.usuario_id == usuario.id,
+            models.Pessoa.ativa == (not inativas),
+        )
         .all()
     )
-    gerou_token = False
+    alterou = False
     for p in pessoas:
         if not p.token_acesso:
             p.token_acesso = secrets.token_urlsafe(12)
-            gerou_token = True
-    if gerou_token:
+            alterou = True
+        norm_fp = _normalizar_foto_relpath(p.foto_path)
+        if norm_fp != p.foto_path:
+            p.foto_path = norm_fp
+            alterou = True
+    if alterou:
         bump_user_sync_rev(db, usuario.id)
         db.commit()
 
@@ -157,6 +184,204 @@ def desativar_pessoa(id: int, db: Session = Depends(get_db), usuario = Depends(a
     db.commit()
     return {"ok": True, "mensagem": "Pessoa desativada."}
 
+
+@router.post("/{id}/restaurar")
+def restaurar_pessoa(id: int, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
+    pessoa = (
+        db.query(models.Pessoa)
+        .filter(models.Pessoa.id == id, models.Pessoa.usuario_id == usuario.id)
+        .first()
+    )
+    if not pessoa:
+        raise HTTPException(status_code=404, detail="Pessoa não encontrada.")
+    pessoa.ativa = True
+    if not pessoa.token_acesso:
+        pessoa.token_acesso = secrets.token_urlsafe(12)
+    pessoa.foto_path = _normalizar_foto_relpath(pessoa.foto_path)
+    bump_user_sync_rev(db, usuario.id)
+    db.commit()
+    db.refresh(pessoa)
+    return {
+        "ok": True,
+        "mensagem": f"{pessoa.nome} restaurada com sucesso!",
+        "pessoa": {
+            "id": pessoa.id,
+            "nome": pessoa.nome,
+            "telefone": pessoa.telefone,
+            "cor": pessoa.cor,
+            "foto_path": pessoa.foto_path,
+            "token_acesso": pessoa.token_acesso,
+            "ativa": pessoa.ativa,
+        },
+    }
+
+
+@router.post("/{id}/zerar")
+def zerar_conta_pessoa(
+    id: int,
+    req: ZerarPessoaRequest = ZerarPessoaRequest(),
+    db: Session = Depends(get_db),
+    usuario = Depends(auth.get_usuario_atual),
+):
+    pessoa = (
+        db.query(models.Pessoa)
+        .filter(models.Pessoa.id == id, models.Pessoa.usuario_id == usuario.id)
+        .first()
+    )
+    if not pessoa:
+        raise HTTPException(status_code=404, detail="Pessoa não encontrada.")
+
+    hoje = date.today()
+    alvo_mes = req.mes or hoje.month
+    alvo_ano = req.ano or hoje.year
+
+    if req.modo == "abater_divida":
+        saldo = calcular_saldo_pessoa_mes(db, id, alvo_mes, alvo_ano)
+        valor_devedor = round(float(saldo.get("saldo_devedor") or 0.0), 2)
+        if valor_devedor <= 0:
+            return {
+                "ok": True,
+                "modo": "abater_divida",
+                "valor_abatido": 0.0,
+                "lancamentos_cancelados": 0,
+                "parcelas_canceladas": 0,
+                "pagamentos_removidos": 0,
+                "mensagem": f"{pessoa.nome} já está sem saldo devedor pendente neste período.",
+            }
+
+        _, ult_dia = calendar.monthrange(alvo_ano, alvo_mes)
+        data_abatimento = hoje if (hoje.year == alvo_ano and hoje.month == alvo_mes) else date(alvo_ano, alvo_mes, min(hoje.day, ult_dia))
+        pag = models.PagamentoPessoa(
+            usuario_id=usuario.id,
+            pessoa_id=id,
+            valor=valor_devedor,
+            data=data_abatimento,
+            observacao=f"Dívida zerada/abatida ({alvo_mes:02d}/{alvo_ano})",
+            forma_pagamento="Abatimento de dívida",
+            conta_id=None,
+        )
+        db.add(pag)
+        bump_user_sync_rev(db, usuario.id)
+        db.commit()
+        return {
+            "ok": True,
+            "modo": "abater_divida",
+            "valor_abatido": valor_devedor,
+            "lancamentos_cancelados": 0,
+            "parcelas_canceladas": 0,
+            "pagamentos_removidos": 0,
+            "mensagem": f"Dívida de R$ {valor_devedor:.2f} de {pessoa.nome} zerada por abatimento (cadastro mantido).",
+        }
+
+    # modo == "apagar_lancamentos"
+    lancamentos_ativos = (
+        db.query(models.Lancamento)
+        .filter(
+            models.Lancamento.pessoa_id == id,
+            models.Lancamento.usuario_id == usuario.id,
+            models.Lancamento.cancelado == False,
+        )
+        .all()
+    )
+
+    lancamentos_cancelados = 0
+    parcelas_canceladas = 0
+    pagamentos_removidos = 0
+
+    def _reconciliar_divida_lancamento(lanc_id: int) -> None:
+        parcelas_divida = (
+            db.query(models.DividaParcela)
+            .filter(
+                models.DividaParcela.lancamento_id == lanc_id,
+                models.DividaParcela.usuario_id == usuario.id,
+            )
+            .all()
+        )
+        for pd in parcelas_divida:
+            pd.lancamento_id = None
+            pd.conta_id = None
+            if (
+                pd.divida
+                and pd.divida.tipo_compromisso == "fixa"
+                and round(float(pd.valor_atual), 2) == round(float(pd.divida.valor_parcela), 2)
+                and not (pd.observacao or "").strip()
+            ):
+                db.delete(pd)
+            else:
+                pd.status = "pendente"
+                pd.valor_pago = None
+                pd.desconto = 0.0
+                pd.acrescimo = 0.0
+                pd.antecipada = False
+                pd.pago_anteriormente = False
+                pd.data_pagamento = None
+                pd.forma_pagamento = None
+
+    if req.escopo == "tudo":
+        for lanc in lancamentos_ativos:
+            lanc.cancelado = True
+            lancamentos_cancelados += 1
+            for p in lanc.parcelas:
+                if p.status != "cancelado":
+                    p.status = "cancelado"
+                    p.data_pagamento = None
+                    parcelas_canceladas += 1
+            _reconciliar_divida_lancamento(lanc.id)
+        if req.limpar_pagamentos:
+            pags = (
+                db.query(models.PagamentoPessoa)
+                .filter(
+                    models.PagamentoPessoa.pessoa_id == id,
+                    models.PagamentoPessoa.usuario_id == usuario.id,
+                )
+                .all()
+            )
+            for pag in pags:
+                db.delete(pag)
+                pagamentos_removidos += 1
+    else:
+        for lanc in lancamentos_ativos:
+            tocou_lanc = False
+            for p in lanc.parcelas:
+                if p.mes == alvo_mes and p.ano == alvo_ano and p.status != "cancelado":
+                    p.status = "cancelado"
+                    p.data_pagamento = None
+                    parcelas_canceladas += 1
+                    tocou_lanc = True
+            if tocou_lanc and lanc.parcelas and all(px.status == "cancelado" for px in lanc.parcelas):
+                lanc.cancelado = True
+                lancamentos_cancelados += 1
+                _reconciliar_divida_lancamento(lanc.id)
+
+        if req.limpar_pagamentos:
+            _, ult_dia = calendar.monthrange(alvo_ano, alvo_mes)
+            pags_mes = (
+                db.query(models.PagamentoPessoa)
+                .filter(
+                    models.PagamentoPessoa.pessoa_id == id,
+                    models.PagamentoPessoa.usuario_id == usuario.id,
+                    models.PagamentoPessoa.data >= date(alvo_ano, alvo_mes, 1),
+                    models.PagamentoPessoa.data <= date(alvo_ano, alvo_mes, ult_dia),
+                )
+                .all()
+            )
+            for pag in pags_mes:
+                db.delete(pag)
+                pagamentos_removidos += 1
+
+    bump_user_sync_rev(db, usuario.id)
+    db.commit()
+    return {
+        "ok": True,
+        "modo": "apagar_lancamentos",
+        "escopo": req.escopo,
+        "valor_abatido": 0.0,
+        "lancamentos_cancelados": lancamentos_cancelados,
+        "parcelas_canceladas": parcelas_canceladas,
+        "pagamentos_removidos": pagamentos_removidos,
+        "mensagem": f"Conta e gastos de {pessoa.nome} limpos com sucesso (cadastro mantido).",
+    }
+
 @router.get("/{id}/extrato")
 def extrato_pessoa(id: int, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
     hoje = date.today()
@@ -168,7 +393,7 @@ def extrato_pessoa(id: int, db: Session = Depends(get_db), usuario = Depends(aut
     if not pessoa:
         raise HTTPException(status_code=404, detail="Pessoa não encontrada.")
 
-    # Busca todos os meses que possuem lançamentos ou pagamentos
+    # Busca todos os meses que possuem lançamentos ou pagamentos ativos
     meses_com_dados = set()
     lancamentos_todos = db.query(models.Lancamento).filter(
         models.Lancamento.pessoa_id == id,
@@ -178,7 +403,8 @@ def extrato_pessoa(id: int, db: Session = Depends(get_db), usuario = Depends(aut
 
     for lanc in lancamentos_todos:
         for p in lanc.parcelas:
-            meses_com_dados.add((p.ano, p.mes))
+            if p.status != "cancelado":
+                meses_com_dados.add((p.ano, p.mes))
 
     pagamentos_todos = db.query(models.PagamentoPessoa).filter(
         models.PagamentoPessoa.pessoa_id == id,
@@ -201,16 +427,20 @@ def extrato_pessoa(id: int, db: Session = Depends(get_db), usuario = Depends(aut
         lancamentos_mes = []
         for lanc in lancamentos_todos:
             for p in lanc.parcelas:
-                if p.mes == mes and p.ano == ano:
+                if p.mes == mes and p.ano == ano and p.status != "cancelado":
                     lancamentos_mes.append({
                         "parcela_id": p.id,
                         "lancamento_id": lanc.id,
+                        "numero": p.numero,
+                        "total_parcelas": lanc.total_parcelas,
                         "descricao": lanc.descricao,
                         "tipo": lanc.tipo,
                         "parcela": f"{p.numero}/{lanc.total_parcelas}" if lanc.total_parcelas > 1 else "À vista",
                         "valor": p.valor,
                         "status": p.status,
                         "cartao": lanc.cartao.nome if lanc.cartao else None,
+                        "cartao_cor": lanc.cartao.cor if lanc.cartao else None,
+                        "cartao_bandeira": lanc.cartao.bandeira if lanc.cartao else None,
                         "conta": lanc.conta.nome if lanc.conta else None,
                         "modulo": lanc.modulo.nome if lanc.modulo else None,
                         "data_lancamento": str(lanc.data_lancamento)

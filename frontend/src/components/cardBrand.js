@@ -20,12 +20,53 @@ const brands = [
   { id: 'mercado-pago', name: 'Mercado Pago', match: /\bmercado\s?pago\b/, color: '#0874ae' },
 ];
 
+export const CARD_COLOR_PALETTE = [
+  { hex: '#dd550b', label: 'Laranja Itaú' },
+  { hex: '#820ad1', label: 'Roxo Nubank' },
+  { hex: '#2563eb', label: 'Azul Royal' },
+  { hex: '#1e3a8a', label: 'Azul Marinho' },
+  { hex: '#0284c7', label: 'Azul Céu' },
+  { hex: '#06b6d4', label: 'Ciano Vivo' },
+  { hex: '#10b981', label: 'Verde Esmeralda' },
+  { hex: '#15803d', label: 'Verde Escuro' },
+  { hex: '#dc2626', label: 'Vermelho Rubi' },
+  { hex: '#9f1239', label: 'Vinho Bordô' },
+  { hex: '#ec4899', label: 'Rosa Vibrante' },
+  { hex: '#5712f8', label: 'Índigo Violeta' },
+  { hex: '#d97706', label: 'Dourado Âmbar' },
+  { hex: '#c35212', label: 'Cobre Atacadão' },
+  { hex: '#616161', label: 'Cinza Titanium' },
+  { hex: '#1f2937', label: 'Grafite Black' },
+];
+
+export function normalizeHexColor(color) {
+  const raw = typeof color === 'string' ? color.trim() : '';
+  return /^#[0-9a-f]{6}$/i.test(raw) ? raw.toLowerCase() : null;
+}
+
+export function suggestIssuerColor(name = '') {
+  const normalized = (name ?? '').normalize('NFD').replace(/\p{M}/gu, '')
+    .toLowerCase().replace(/[^a-z0-9]+/g, ' ');
+  const matched = brands.find(brand => brand.match.test(normalized));
+  return matched ? matched.color : null;
+}
+
 export function getCardBrand(name = '', color) {
   const normalized = (name ?? '').normalize('NFD').replace(/\p{M}/gu, '')
     .toLowerCase().replace(/[^a-z0-9]+/g, ' ');
-  return brands.find(brand => brand.match.test(normalized)) ?? {
+  const customHex = normalizeHexColor(color);
+  const matched = brands.find(brand => brand.match.test(normalized));
+  if (matched) {
+    return {
+      ...matched,
+      color: customHex ?? matched.color,
+      hasCustomColor: Boolean(customHex),
+    };
+  }
+  return {
     id: 'custom',
     name: name?.trim() || 'Cartão',
-    color: /^#[0-9a-f]{6}$/i.test(color ?? '') ? color : '#51677e',
+    color: customHex ?? '#51677e',
+    hasCustomColor: Boolean(customHex),
   };
 }

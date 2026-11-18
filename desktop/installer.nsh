@@ -16,30 +16,24 @@
   ${AndIf} ${FileExists} "D:\*.*"
     StrCpy $INSTDIR "D:\AdministracaoFinanceira"
   ${EndIf}
-  ; Protege $INSTDIR\dados contra desinstaladores legados (v2.0.0) que executavam RMDir /r $INSTDIR
-  ${If} ${FileExists} "$INSTDIR\dados\*.*"
+  ; Backup de seguranca nao-destrutivo de $INSTDIR\dados caso desinstalador legado (v2.0.0) execute RMDir /r
+  ${If} ${FileExists} "$INSTDIR\dados\financeiro.db"
     RMDir /r "$INSTDIR\..\.__adm_fin_dados_upgrade_guard"
-    Rename "$INSTDIR\dados" "$INSTDIR\..\.__adm_fin_dados_upgrade_guard"
+    CreateDirectory "$INSTDIR\..\.__adm_fin_dados_upgrade_guard"
+    CopyFiles /SILENT "$INSTDIR\dados\*.*" "$INSTDIR\..\.__adm_fin_dados_upgrade_guard"
   ${EndIf}
 !macroend
 
 !macro customInstall
   ${If} ${FileExists} "$INSTDIR\..\.__adm_fin_dados_upgrade_guard\*.*"
-    ${IfNot} ${FileExists} "$INSTDIR\dados\*.*"
+    ${IfNot} ${FileExists} "$INSTDIR\dados\financeiro.db"
+      RMDir /r "$INSTDIR\dados"
       Rename "$INSTDIR\..\.__adm_fin_dados_upgrade_guard" "$INSTDIR\dados"
+    ${Else}
+      RMDir /r "$INSTDIR\..\.__adm_fin_dados_upgrade_guard"
     ${EndIf}
   ${EndIf}
 !macroend
-
-!ifndef BUILD_UNINSTALLER
-Function .onUserAbort
-  ${If} ${FileExists} "$INSTDIR\..\.__adm_fin_dados_upgrade_guard\*.*"
-    ${IfNot} ${FileExists} "$INSTDIR\dados\*.*"
-      Rename "$INSTDIR\..\.__adm_fin_dados_upgrade_guard" "$INSTDIR\dados"
-    ${EndIf}
-  ${EndIf}
-FunctionEnd
-!endif
 
 !macro customRemoveFiles
   RMDir /r "$INSTDIR\locales"

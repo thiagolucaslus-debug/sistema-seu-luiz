@@ -105,7 +105,9 @@ def listar_lancamentos(
     if mes and ano:
         query = query.filter(
             models.Lancamento.parcelas.any(
-                (models.Parcela.mes == mes) & (models.Parcela.ano == ano)
+                (models.Parcela.mes == mes)
+                & (models.Parcela.ano == ano)
+                & (models.Parcela.status != "cancelado")
             )
         )
 
@@ -300,6 +302,13 @@ def alterar_status_parcela(id: int, numero: int, status: str, db: Session = Depe
         parcela.data_pagamento = date.today()
     else:
         parcela.data_pagamento = None
+
+    lanc = parcela.lancamento
+    if lanc and lanc.parcelas:
+        if all(p.status == "cancelado" for p in lanc.parcelas):
+            lanc.cancelado = True
+        elif status != "cancelado" and lanc.cancelado:
+            lanc.cancelado = False
 
     bump_user_sync_rev(db, usuario.id)
     db.commit()
