@@ -24,7 +24,7 @@ export const CARD_COLOR_PALETTE = [
   { hex: '#dd550b', label: 'Laranja Itaú' },
   { hex: '#820ad1', label: 'Roxo Nubank' },
   { hex: '#2563eb', label: 'Azul Royal' },
-  { hex: '#1e3a8a', label: 'Azul Marinho' },
+  { hex: '#20396a', label: 'Azul Coop / Marinho' },
   { hex: '#0284c7', label: 'Azul Céu' },
   { hex: '#06b6d4', label: 'Ciano Vivo' },
   { hex: '#10b981', label: 'Verde Esmeralda' },
@@ -36,7 +36,7 @@ export const CARD_COLOR_PALETTE = [
   { hex: '#d97706', label: 'Dourado Âmbar' },
   { hex: '#c35212', label: 'Cobre Atacadão' },
   { hex: '#616161', label: 'Cinza Titanium' },
-  { hex: '#1f2937', label: 'Grafite Black' },
+  { hex: '#111827', label: 'Preto Black' },
 ];
 
 export function normalizeHexColor(color) {
@@ -54,19 +54,25 @@ export function suggestIssuerColor(name = '') {
 export function getCardBrand(name = '', color) {
   const normalized = (name ?? '').normalize('NFD').replace(/\p{M}/gu, '')
     .toLowerCase().replace(/[^a-z0-9]+/g, ' ');
-  const customHex = normalizeHexColor(color);
+  const rawTrimmed = typeof color === 'string' ? color.trim() : '';
+  const isLegacyUntouchedDefault = rawTrimmed === '#8B5CF6';
+  const customHex = isLegacyUntouchedDefault ? null : normalizeHexColor(rawTrimmed);
   const matched = brands.find(brand => brand.match.test(normalized));
   if (matched) {
+    const resolvedColor = customHex ?? matched.color;
     return {
       ...matched,
-      color: customHex ?? matched.color,
+      color: resolvedColor,
       hasCustomColor: Boolean(customHex),
+      isIssuerOverride: Boolean(customHex && customHex !== matched.color.toLowerCase()),
     };
   }
+  const fallbackHex = normalizeHexColor(rawTrimmed);
   return {
     id: 'custom',
     name: name?.trim() || 'Cartão',
-    color: customHex ?? '#51677e',
-    hasCustomColor: Boolean(customHex),
+    color: fallbackHex ?? '#51677e',
+    hasCustomColor: Boolean(fallbackHex),
+    isIssuerOverride: Boolean(fallbackHex),
   };
 }

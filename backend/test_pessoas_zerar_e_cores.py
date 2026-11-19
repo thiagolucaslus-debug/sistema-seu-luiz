@@ -120,7 +120,8 @@ def test_restaurar_pessoa_zerar_conta_excluir_parcela_e_isolamento(tmp_path: Pat
     assert hist_seg["total_gastos"] == 200.0
     assert hist_seg["lancamentos"][0]["cartao_cor"] == "#06b6d4"
 
-    # 2. Modo 'abater_divida' na ALESSANDRA quita a dívida dela (R$ 0,00) mantendo a compra na fatura do cartão!
+    # 2. Modo 'abater_divida' na ALESSANDRA quita a dívida dela (R$ 0,00) mantendo a compra na fatura do cartão
+    #    E NÃO ressuscita como saldo_anterior no mês seguinte!
     res_abater = c.post(
         f"/pessoas/{alessandra['id']}/zerar",
         json={"modo": "abater_divida", "escopo": "mes", "mes": mes_atual, "ano": ano_atual},
@@ -132,10 +133,43 @@ def test_restaurar_pessoa_zerar_conta_excluir_parcela_e_isolamento(tmp_path: Pat
     assert lista_pos_abate["ALESSANDRA"]["saldo_devedor"] == 0.0
     assert c.get("/cartoes/", headers=h_luiz).json()[0]["fatura_mes_atual"]["total"] == 80.0
 
+    # Verifica no mês seguinte que a dívida abatida da ALESSANDRA permanece R$ 0,00 (sem ressuscitar em saldo_anterior)
+    dash_seg = c.get("/relatorios/dashboard", params={"mes": mes_seg, "ano": ano_seg}, headers=h_luiz).json()
+    ale_seg = next(p for p in dash_seg["pessoas"] if p["id"] == alessandra["id"])
+    assert ale_seg["saldo_devedor"] == 0.0
+
+    # Testa abater_divida com escopo='tudo' em compra parcelada futura (quita todas as parcelas futuras sem apagar da fatura)
+    c.post(
+        "/lancamentos/",
+        json={
+            "descricao": "Curso Parcelado Alessandra",
+            "tipo": "compra_cartao",
+            "valor_total": 300.0,
+            "total_parcelas": 2,
+            "data_lancamento": hoje.isoformat(),
+            "mes_fatura": mes_atual,
+            "ano_fatura": ano_atual,
+            "cartao_id": cartao["id"],
+            "pessoa_id": alessandra["id"],
+        },
+        headers=h_luiz,
+    )
+    res_abater_tudo = c.post(
+        f"/pessoas/{alessandra['id']}/zerar",
+        json={"modo": "abater_divida", "escopo": "tudo"},
+        headers=h_luiz,
+    )
+    assert res_abater_tudo.status_code == 200
+    assert res_abater_tudo.json()["valor_abatido"] == 300.0
+    ext_ale_tudo = c.get(f"/pessoas/{alessandra['id']}/extrato", headers=h_luiz).json()
+    for h_ale in ext_ale_tudo["historico"]:
+        assert h_ale["saldo_devedor"] == 0.0
+        assert h_ale["credito_a_favor"] == 0.0
+
     # Chamada repetida de abater_divida quando já está zerada é idempotente
     res_abater_dup = c.post(
         f"/pessoas/{alessandra['id']}/zerar",
-        json={"modo": "abater_divida", "escopo": "mes", "mes": mes_atual, "ano": ano_atual},
+        json={"modo": "abater_divida", "escopo": "tudo"},
         headers=h_luiz,
     )
     assert res_abater_dup.status_code == 200
@@ -251,3 +285,42 @@ def test_sync_desktop_hub_zerar_restaurar_e_upload_legado(tmp_path: Path):
     pessoas_hub = hub_c.get("/pessoas/", headers=h_hub).json()
     assert pessoas_hub[0]["saldo_devedor"] == 0.0
     assert hub_c.get("/cartoes/", headers=h_hub).json()[0]["cor"] == "#ec4899"
+
+    # Testa migração de cor legada '#8B5CF6' em emissores conhecidos e criação+exclusão offline de PagamentoPessoa com colisão de PK
+    import models as models_mod
+    from sqlalchemy.orm import Session as OrmSession
+    from tenancy import normalize_legacy_issuer_card_colors
+
+    with OrmSession(bind=hub["engine"]) as s_hub:
+        c_itau = models_mod.Cartao(usuario_id=1, nome="ITAU ", bandeira="Visa", cor="#8B5CF6")
+        c_atac = models_mod.Cartao(usuario_id=1, nome="ATACADÃO ", bandeira="Visa", cor="#8B5CF6")
+        c_coop = models_mod.Cartao(usuario_id=1, nome="COOOP", bandeira="Visa", cor="#8B5CF6")
+        # Cria pagamento extra no Hub para deslocar PK de pagamentos_pessoa em relação ao PC offline
+        s_hub.add_all([c_itau, c_atac, c_coop])
+        s_hub.add(models_mod.PagamentoPessoa(usuario_id=1, pessoa_id=p_hub["id"], valor=10.0, data=date.today()))
+        s_hub.flush()
+        assert normalize_legacy_issuer_card_colors(s_hub) is True
+        s_hub.commit()
+    cartoes_migrados = {cm["nome"].strip(): cm["cor"] for cm in hub_c.get("/cartoes/", headers=h_hub).json()}
+    assert cartoes_migrados["ITAU"] == "#dd550b"
+    assert cartoes_migrados["ATACADÃO"] == "#c35212"
+    assert cartoes_migrados["COOOP"] == "#20396a"
+
+    network["online"] = False
+    pag_off = pc_c.post(
+        f"/pessoas/{p_hub['id']}/pagamento",
+        json={"valor": 75.0, "data": date.today().isoformat(), "forma": "pix"},
+        headers=h_pc,
+    )
+    assert pag_off.status_code == 200
+    pag_off_id = pag_off.json()["id"]
+    del_pag_off = pc_c.delete(f"/pessoas/{p_hub['id']}/pagamento/{pag_off_id}", headers=h_pc)
+    assert del_pag_off.status_code == 200
+
+    network["online"] = True
+    _t.sleep(0.08)
+    pc_c.get("/pessoas/", headers=h_pc)
+    ext_hub_final = hub_c.get(f"/pessoas/{p_hub['id']}/extrato", headers=h_hub).json()
+    pags_hub_vals = [pg["valor"] for h_m in ext_hub_final["historico"] for pg in h_m["pagamentos"]]
+    assert 75.0 not in pags_hub_vals
+    assert 10.0 in pags_hub_vals

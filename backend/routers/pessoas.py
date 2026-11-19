@@ -236,12 +236,79 @@ def zerar_conta_pessoa(
     alvo_ano = req.ano or hoje.year
 
     if req.modo == "abater_divida":
+        if req.escopo == "tudo":
+            lancs_pessoa = (
+                db.query(models.Lancamento)
+                .filter(
+                    models.Lancamento.pessoa_id == id,
+                    models.Lancamento.usuario_id == usuario.id,
+                    models.Lancamento.cancelado == False,
+                )
+                .all()
+            )
+            meses_alvo = {(hoje.year, hoje.month)}
+            for lanc in lancs_pessoa:
+                for parc in lanc.parcelas:
+                    if parc.status != "cancelado":
+                        meses_alvo.add((parc.ano, parc.mes))
+
+            total_abatido = 0.0
+            for a_it, m_it in sorted(meses_alvo):
+                saldo_it = calcular_saldo_pessoa_mes(db, id, m_it, a_it)
+                dev_it = round(float(saldo_it.get("saldo_devedor") or 0.0), 2)
+                if dev_it > 0:
+                    _, ult_d = calendar.monthrange(a_it, m_it)
+                    dt_abate = (
+                        hoje
+                        if (hoje.year == a_it and hoje.month == m_it)
+                        else date(a_it, m_it, min(hoje.day, ult_d))
+                    )
+                    db.add(
+                        models.PagamentoPessoa(
+                            usuario_id=usuario.id,
+                            pessoa_id=id,
+                            valor=dev_it,
+                            data=dt_abate,
+                            observacao=f"Dívida zerada/abatida ({m_it:02d}/{a_it})",
+                            forma_pagamento="Abatimento de dívida",
+                            conta_id=None,
+                        )
+                    )
+                    db.flush()
+                    total_abatido = round(total_abatido + dev_it, 2)
+
+            if total_abatido <= 0:
+                return {
+                    "ok": True,
+                    "modo": "abater_divida",
+                    "escopo": "tudo",
+                    "valor_abatido": 0.0,
+                    "lancamentos_cancelados": 0,
+                    "parcelas_canceladas": 0,
+                    "pagamentos_removidos": 0,
+                    "mensagem": f"{pessoa.nome} já está sem saldo devedor pendente.",
+                }
+
+            bump_user_sync_rev(db, usuario.id)
+            db.commit()
+            return {
+                "ok": True,
+                "modo": "abater_divida",
+                "escopo": "tudo",
+                "valor_abatido": total_abatido,
+                "lancamentos_cancelados": 0,
+                "parcelas_canceladas": 0,
+                "pagamentos_removidos": 0,
+                "mensagem": f"Dívida total de R$ {total_abatido:.2f} de {pessoa.nome} zerada por abatimento (cadastro mantido).",
+            }
+
         saldo = calcular_saldo_pessoa_mes(db, id, alvo_mes, alvo_ano)
         valor_devedor = round(float(saldo.get("saldo_devedor") or 0.0), 2)
         if valor_devedor <= 0:
             return {
                 "ok": True,
                 "modo": "abater_divida",
+                "escopo": "mes",
                 "valor_abatido": 0.0,
                 "lancamentos_cancelados": 0,
                 "parcelas_canceladas": 0,
@@ -266,6 +333,7 @@ def zerar_conta_pessoa(
         return {
             "ok": True,
             "modo": "abater_divida",
+            "escopo": "mes",
             "valor_abatido": valor_devedor,
             "lancamentos_cancelados": 0,
             "parcelas_canceladas": 0,

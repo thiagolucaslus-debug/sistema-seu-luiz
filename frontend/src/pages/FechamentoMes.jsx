@@ -3,6 +3,7 @@ import { relatorios, pessoas as pessoasApi, whatsapp as whatsappApi, mediaUrl, p
 import { useAuth } from '../contexts/AuthContext';
 import Avatar from '../components/Avatar';
 import CardArtwork from '../components/CardArtwork';
+import { getCardBrand } from '../components/cardBrand';
 import {
   CalendarCheck, CreditCard, Building2, Users, Send, CheckCircle2,
   AlertCircle, ArrowUpRight, ArrowDownLeft, Download, RefreshCw, X
@@ -254,13 +255,14 @@ export default function FechamentoMes() {
     }
   };
 
+  const totalRecebidoCalc = (dados?.pessoas || []).reduce((acc, p) => acc + (p.total_pagamentos || 0), 0);
   const r = dados?.resumo || {
-    total_faturas_cartao: 0,
-    total_saidas_contas: 0,
-    total_gastos_consolidado: 0,
-    total_a_receber_pessoas: 0,
-    total_a_pagar_pessoas: 0,
-    total_recebido_mes: 0
+    total_faturas_cartao: dados?.total_faturas_cartoes ?? 0,
+    total_saidas_contas: dados?.total_saidas_contas ?? 0,
+    total_gastos_consolidado: dados?.total_faturas_cartoes ?? 0,
+    total_a_receber_pessoas: dados?.total_a_receber_pessoas ?? 0,
+    total_a_pagar_pessoas: dados?.total_a_pagar_pessoas ?? 0,
+    total_recebido_mes: totalRecebidoCalc
   };
 
   return (
@@ -442,13 +444,13 @@ export default function FechamentoMes() {
                       <div className="space-y-2 p-3 rounded-xl mb-4 text-xs" style={{ backgroundColor: 'var(--raised)' }}>
                         <div className="flex justify-between items-center text-slate-300">
                           <span>Gastos no Cartão:</span>
-                          <span className="font-bold text-ink">{fmt(p.total_compras_cartao)}</span>
+                          <span className="font-bold text-ink">{fmt(p.gastos_mes ?? p.total_compras_cartao)}</span>
                         </div>
 
-                        {p.total_compras_para_mim > 0 && (
+                        {(p.compras_para_mim ?? p.total_compras_para_mim ?? 0) > 0 && (
                           <div className="flex justify-between items-center text-purple-400">
                             <span>Comprou pra você (abate):</span>
-                            <span className="font-bold">- {fmt(p.total_compras_para_mim)}</span>
+                            <span className="font-bold">- {fmt(p.compras_para_mim ?? p.total_compras_para_mim)}</span>
                           </div>
                         )}
 
@@ -507,8 +509,14 @@ export default function FechamentoMes() {
                   />
                 </div>
                 <div className="flex justify-between items-start mb-2">
-                  <div>
-                    <h3 className="font-extrabold text-ink text-lg">{c.nome}</h3>
+                  <div className="min-w-0">
+                    <h3 className="font-extrabold text-ink text-lg flex items-center gap-2">
+                      <span
+                        className="w-3 h-3 rounded-full shrink-0 ring-2 ring-white/20"
+                        style={{ backgroundColor: getCardBrand(c.nome, c.cor).color }}
+                      />
+                      <span className="truncate">{c.nome}</span>
+                    </h3>
                     <p className="text-xs text-slate-400">Fecha dia {c.dia_fechamento} • Vence dia {c.dia_vencimento}</p>
                   </div>
                   <span className={`px-2.5 py-1 text-xs font-bold rounded-lg ${
@@ -521,7 +529,7 @@ export default function FechamentoMes() {
 
               <div className="mt-4 pt-3 border-t border-slate-700/50 flex justify-between items-center">
                 <span className="text-xs text-slate-400">Fatura {meses[mes - 1]}:</span>
-                <span className="text-xl font-black text-ink">{fmt(c.total_fatura)}</span>
+                <span className="text-xl font-black text-ink">{fmt(c.total ?? c.total_fatura)}</span>
               </div>
             </div>
           ))}

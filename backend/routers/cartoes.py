@@ -18,7 +18,7 @@ class CartaoCreate(BaseModel):
     dia_fechamento: int = 20
     dia_vencimento: int = 27
     limite: float = 0.0
-    cor: str = "#8B5CF6"
+    cor: str = "#2563eb"
 
 class CartaoUpdate(BaseModel):
     nome: Optional[str] = None
@@ -148,6 +148,8 @@ def faturas_cartao(id: int, meses_atras: int = 6, meses_frente: int = 6, db: Ses
             itens.append({
                 "parcela_id": p.id,
                 "lancamento_id": l.id,
+                "numero": p.numero,
+                "total_parcelas": l.total_parcelas,
                 "descricao": l.descricao,
                 "parcela": f"{p.numero}/{l.total_parcelas}" if l.total_parcelas > 1 else "À vista",
                 "valor": p.valor,

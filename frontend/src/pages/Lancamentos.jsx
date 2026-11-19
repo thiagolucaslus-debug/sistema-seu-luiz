@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import Avatar from '../components/Avatar';
 import CardArtwork from '../components/CardArtwork';
+import { getCardBrand } from '../components/cardBrand';
 import PersonPicker from '../components/PersonPicker';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -210,7 +211,7 @@ function ModalNovoLancamento({ cartoes, contas, pessoas, modulos, onClose, onSav
                   <CardArtwork cartao={cartaoSelecionado} compact />
                   <span
                     className="w-2.5 h-2.5 rounded-full shrink-0"
-                    style={{ backgroundColor: cartaoSelecionado.cor || '#8B5CF6' }}
+                    style={{ backgroundColor: getCardBrand(cartaoSelecionado.nome, cartaoSelecionado.cor).color }}
                   />
                   <span className="font-semibold text-[var(--ink)]">{cartaoSelecionado.nome}</span>
                   <span>• {cartaoSelecionado.bandeira}</span>
@@ -509,7 +510,12 @@ export default function Lancamentos() {
                     <td className="px-5 py-3.5 text-gray-700 font-medium text-xs">
                       {item.cartao ? (
                         <span className="inline-flex items-center gap-2 font-semibold">
-                          <CardArtwork cartao={item.cartao} compact />{item.cartao.nome}
+                          <CardArtwork cartao={item.cartao} compact />
+                          <span
+                            className="w-2.5 h-2.5 rounded-full shrink-0"
+                            style={{ backgroundColor: getCardBrand(item.cartao.nome, item.cartao.cor).color }}
+                          />
+                          {item.cartao.nome}
                         </span>
                       ) : item.conta ? (
                         <span className="inline-flex items-center gap-1.5 text-blue-700 font-semibold"><Building2 size={15} />{item.conta.nome}</span>

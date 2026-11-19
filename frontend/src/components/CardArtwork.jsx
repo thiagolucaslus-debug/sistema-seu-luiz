@@ -27,6 +27,7 @@ export default function CardArtwork({ cartao, brand: legacyBrand, bank: legacyBa
     <div
       className={`card-art${compact ? ' card-art--compact' : ''}${artwork ? ' card-art--official' : ''}${className ? ` ${className}` : ''}`}
       data-issuer={brand.id}
+      data-custom-color={brand.isIssuerOverride ? 'true' : 'false'}
       style={{ '--issuer': brand.color }}
       aria-hidden="true"
     >

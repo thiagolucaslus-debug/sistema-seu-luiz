@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
-import { cartoes as cartoesApi, contas as contasApi } from '../api/client';
+import { cartoes as cartoesApi, contas as contasApi, lancamentos as lancamentosApi } from '../api/client';
 import {
   CreditCard, Plus, CheckCircle, Check, Palette, Edit2, RotateCcw,
-  Calendar, X, Trash2, ArrowLeft, ArrowUpRight, DollarSign
+  Calendar, X, Trash2, ArrowLeft, ArrowUpRight, DollarSign, Eraser
 } from 'lucide-react';
 import CardArtwork from '../components/CardArtwork';
 import {
@@ -18,22 +18,35 @@ function fmt(val) {
 }
 
 function SeletorPaletaCorCartao({ form, onChangeCor }) {
-  const corAtual = normalizeHexColor(form.cor) || '#8b5cf6';
+  const corAtual = normalizeHexColor(form.cor) || '#2563eb';
+  const corEmissor = suggestIssuerColor(form.nome);
 
   return (
     <div className="space-y-3 p-3.5 rounded-2xl bg-[var(--raised)] border border-[var(--line)]">
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <label className="label mb-0 flex items-center gap-2">
           <Palette size={14} className="text-blue-500" />
           <span>Cor do Cartão e Indicador</span>
         </label>
-        <span className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full text-xs font-mono font-bold bg-[var(--surface)] border border-[var(--line)] text-[var(--ink)]">
-          <span
-            className="w-3.5 h-3.5 rounded-full shrink-0 ring-2 ring-white/30 shadow-sm"
-            style={{ backgroundColor: corAtual }}
-          />
-          {corAtual.toUpperCase()}
-        </span>
+        <div className="flex items-center gap-1.5">
+          {corEmissor && corEmissor.toLowerCase() !== corAtual.toLowerCase() && (
+            <button
+              type="button"
+              onClick={() => onChangeCor(corEmissor)}
+              className="px-2 py-1 rounded-full text-[11px] font-semibold bg-[var(--surface)] border border-[var(--line)] text-[var(--muted)] hover:text-[var(--ink)] transition-colors"
+              title="Restaurar a cor oficial sugerida para este banco"
+            >
+              Cor do banco
+            </button>
+          )}
+          <span className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full text-xs font-mono font-bold bg-[var(--surface)] border border-[var(--line)] text-[var(--ink)]">
+            <span
+              className="w-3.5 h-3.5 rounded-full shrink-0 ring-2 ring-white/30 shadow-sm"
+              style={{ backgroundColor: corAtual }}
+            />
+            {corAtual.toUpperCase()}
+          </span>
+        </div>
       </div>
 
       {/* Pré-visualização ao vivo do Cartão com a exata cor escolhida */}
@@ -103,8 +116,8 @@ function SeletorPaletaCorCartao({ form, onChangeCor }) {
 function ModalCartaoForm({ cartaoInicial = null, onClose, onSaved }) {
   const isEdit = Boolean(cartaoInicial);
   const corInicial = cartaoInicial
-    ? (normalizeHexColor(cartaoInicial.cor) || getCardBrand(cartaoInicial.nome, cartaoInicial.cor).color)
-    : '#8b5cf6';
+    ? getCardBrand(cartaoInicial.nome, cartaoInicial.cor).color
+    : '#2563eb';
 
   const [form, setForm] = useState({
     nome: cartaoInicial?.nome || '',
@@ -143,7 +156,7 @@ function ModalCartaoForm({ cartaoInicial = null, onClose, onSaved }) {
         dia_fechamento: parseInt(form.dia_fechamento, 10),
         dia_vencimento: parseInt(form.dia_vencimento, 10),
         limite: parseFloat(form.limite) || 0.0,
-        cor: normalizeHexColor(form.cor) || '#8b5cf6',
+        cor: normalizeHexColor(form.cor) || '#2563eb',
       };
       if (isEdit) {
         await cartoesApi.atualizar(cartaoInicial.id, payload);
@@ -360,6 +373,91 @@ function ModalPagarFatura({ cartao, fatura, contas, onClose, onSaved }) {
   );
 }
 
+function ModalExcluirItemFatura({ item, nomeMes, onClose, onSaved }) {
+  const [loading, setLoading] = useState(false);
+  const temMultiplasParcelas = (item.total_parcelas || 1) > 1;
+
+  const cancelarSoParcela = async () => {
+    setLoading(true);
+    try {
+      await lancamentosApi.alterarParcelaStatus(item.lancamento_id, item.numero, 'cancelado');
+      onSaved();
+      onClose();
+    } catch (err) {
+      alert('Erro ao cancelar parcela: ' + (err.response?.data?.detail || err.message));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const excluirCompraInteira = async () => {
+    setLoading(true);
+    try {
+      await lancamentosApi.cancelar(item.lancamento_id);
+      onSaved();
+      onClose();
+    } catch (err) {
+      alert('Erro ao excluir lançamento: ' + (err.response?.data?.detail || err.message));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/65 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <div className="bg-[var(--surface)] text-[var(--ink)] rounded-3xl shadow-2xl w-full max-w-md p-6 border border-[var(--line)] space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="font-extrabold text-base text-[var(--ink)]">Excluir Lançamento da Fatura</h3>
+          <button type="button" onClick={onClose} className="p-1 text-[var(--muted)] hover:text-[var(--ink)]">
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="p-3.5 rounded-2xl bg-[var(--raised)] border border-[var(--line)] text-xs space-y-1">
+          <p className="font-bold text-sm text-[var(--ink)]">{item.descricao}</p>
+          <p className="text-[var(--muted)]">
+            Responsável: <strong>{item.pessoa || 'Você'}</strong> • Parcela: <strong>{item.parcela}</strong> • Valor em {nomeMes}: <strong>{fmt(item.valor)}</strong>
+          </p>
+        </div>
+
+        <div className="space-y-2">
+          {temMultiplasParcelas && item.numero && (
+            <button
+              type="button"
+              disabled={loading}
+              onClick={cancelarSoParcela}
+              className="btn-primary w-full py-2.5 text-xs font-bold flex items-center justify-center gap-2"
+            >
+              <Eraser size={15} />
+              <span>Remover Só Esta Parcela ({item.parcela} em {nomeMes})</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            disabled={loading}
+            onClick={excluirCompraInteira}
+            className="btn-danger w-full py-2.5 text-xs font-bold flex items-center justify-center gap-2"
+          >
+            <Trash2 size={15} />
+            <span>
+              {loading
+                ? 'Excluindo...'
+                : temMultiplasParcelas
+                  ? `Excluir Compra Inteira (${item.total_parcelas}x)`
+                  : 'Confirmar Exclusão desta Compra'}
+            </span>
+          </button>
+
+          <button type="button" onClick={onClose} className="btn-secondary w-full py-2 text-xs">
+            Cancelar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ==========================================
 // PÁGINA COMPLETA EXCLUSIVA DO CARTÃO
 // ==========================================
@@ -368,6 +466,7 @@ function DetalheCartao({ cartao, contas, onVoltar, onEditar, onRefresh }) {
   const [loadingFaturas, setLoadingFaturas] = useState(true);
   const [faturaIdx, setFaturaIdx] = useState(0);
   const [modalPagar, setModalPagar] = useState(null);
+  const [itemExcluindo, setItemExcluindo] = useState(null);
   const brand = getCardBrand(cartao.nome, cartao.cor);
 
   const carregarFaturas = async () => {
@@ -599,13 +698,25 @@ function DetalheCartao({ cartao, contas, onVoltar, onEditar, onRefresh }) {
                             </div>
                           </div>
 
-                          <div className="text-right shrink-0 ml-auto sm:ml-0">
-                            <span className="text-base font-black text-[var(--ink)] block">
-                              {fmt(item.valor)}
-                            </span>
-                            <span className={`text-[10px] font-semibold uppercase ${item.status === 'pago' ? 'text-emerald-500' : 'text-[var(--muted)]'}`}>
-                              {item.status === 'pago' ? 'Quitado' : 'A Vencer'}
-                            </span>
+                          <div className="flex items-center gap-2.5 shrink-0 ml-auto sm:ml-0">
+                            <div className="text-right">
+                              <span className="text-base font-black text-[var(--ink)] block">
+                                {fmt(item.valor)}
+                              </span>
+                              <span className={`text-[10px] font-semibold uppercase ${item.status === 'pago' ? 'text-emerald-500' : 'text-[var(--muted)]'}`}>
+                                {item.status === 'pago' ? 'Quitado' : 'A Vencer'}
+                              </span>
+                            </div>
+                            {item.lancamento_id && (
+                              <button
+                                type="button"
+                                onClick={() => setItemExcluindo({ item, nomeMes: faturaSelecionada.nome_mes })}
+                                className="p-1.5 text-[var(--muted)] hover:text-rose-500 hover:bg-rose-500/10 rounded-lg transition-colors"
+                                title="Excluir este lançamento ou parcela"
+                              >
+                                <Trash2 size={15} />
+                              </button>
+                            )}
                           </div>
                         </div>
                       );
@@ -624,6 +735,15 @@ function DetalheCartao({ cartao, contas, onVoltar, onEditar, onRefresh }) {
           fatura={modalPagar}
           contas={contas}
           onClose={() => setModalPagar(null)}
+          onSaved={() => { carregarFaturas(); onRefresh(); }}
+        />
+      )}
+
+      {itemExcluindo && (
+        <ModalExcluirItemFatura
+          item={itemExcluindo.item}
+          nomeMes={itemExcluindo.nomeMes}
+          onClose={() => setItemExcluindo(null)}
           onSaved={() => { carregarFaturas(); onRefresh(); }}
         />
       )}

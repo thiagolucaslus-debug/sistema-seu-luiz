@@ -11,6 +11,8 @@ const css = await readFile(new URL('../src/index.css', import.meta.url), 'utf8')
 const cardArtworkSrc = await readFile(new URL('../src/components/CardArtwork.jsx', import.meta.url), 'utf8');
 const cartoesSrc = await readFile(new URL('../src/pages/Cartoes.jsx', import.meta.url), 'utf8');
 const pessoasSrc = await readFile(new URL('../src/pages/Pessoas.jsx', import.meta.url), 'utf8');
+const lancamentosSrc = await readFile(new URL('../src/pages/Lancamentos.jsx', import.meta.url), 'utf8');
+const fechamentoSrc = await readFile(new URL('../src/pages/FechamentoMes.jsx', import.meta.url), 'utf8');
 
 test('reconhece emissores em nomes cadastrados com acentos, abreviações e apelidos', () => {
   for (const [nome, emissor] of [
@@ -54,10 +56,19 @@ test('aplica a cor escolhida na paleta mesmo em emissores conhecidos (Itaú, Coo
   const atacadaoVerde = getCardBrand('ATACADÃO ', '#10b981');
   assert.equal(atacadaoVerde.id, 'atacadao');
   assert.equal(atacadaoVerde.color, '#10b981');
+  assert.equal(atacadaoVerde.isIssuerOverride, true);
+
+  // Cartões legados intocados com default '#8B5CF6' preservam a cor real do emissor,
+  // enquanto '#8b5cf6' escolhido manualmente no seletor continua respeitado
+  assert.equal(getCardBrand('ITAU ', '#8B5CF6').color, '#dd550b');
+  assert.equal(getCardBrand('ATACADÃO ', '#8B5CF6').color, '#c35212');
+  assert.equal(getCardBrand('COOOP', '#8B5CF6').color, '#20396a');
+  assert.equal(getCardBrand('ITAU 9999', '#8b5cf6').color, '#8b5cf6');
+  assert.equal(getCardBrand('Black Itau', '#0d0c0d').color, '#0d0c0d');
 
   assert.equal(suggestIssuerColor('Itaú 8334'), '#dd550b');
   assert.equal(suggestIssuerColor('Cartão Próprio'), null);
-  assert.ok(CARD_COLOR_PALETTE.length >= 12);
+  assert.ok(CARD_COLOR_PALETTE.length >= 16);
 });
 
 test('garante que CSS e CardArtwork usem exatamente a cor do indicador no cartão e expõe edição/zerar', () => {
@@ -72,4 +83,7 @@ test('garante que CSS e CardArtwork usem exatamente a cor do indicador no cartã
   assert.match(pessoasSrc, /pessoasApi\.restaurar/);
   assert.match(pessoasSrc, /pessoasApi\.deletarPagamento/);
   assert.match(pessoasSrc, /lancamentosApi\.cancelar/);
+  assert.match(pessoasSrc, /getCardBrand\(/);
+  assert.match(lancamentosSrc, /getCardBrand\(/);
+  assert.match(fechamentoSrc, /getCardBrand\(/);
 });

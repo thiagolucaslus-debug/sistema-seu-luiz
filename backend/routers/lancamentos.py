@@ -232,25 +232,12 @@ def criar_lancamento(data: LancamentoCreate, db: Session = Depends(get_db), usua
         "fatura_inicial": f"{mes_ini:02d}/{ano_ini}"
     }
 
-@router.delete("/{id}")
-def cancelar_lancamento(id: int, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
-    lanc = (
-        db.query(models.Lancamento)
-        .filter(models.Lancamento.id == id, models.Lancamento.usuario_id == usuario.id)
-        .first()
-    )
-    if not lanc:
-        raise HTTPException(status_code=404, detail="Lançamento não encontrado.")
-    lanc.cancelado = True
-    for p in lanc.parcelas:
-        p.status = "cancelado"
-
-    # Reconcilia eventual parcela/competência de Dívida vinculada a este lançamento bancário
+def _reconciliar_divida_lancamento(db: Session, lanc_id: int, usuario_id: int) -> None:
     parcelas_divida = (
         db.query(models.DividaParcela)
         .filter(
-            models.DividaParcela.lancamento_id == lanc.id,
-            models.DividaParcela.usuario_id == usuario.id,
+            models.DividaParcela.lancamento_id == lanc_id,
+            models.DividaParcela.usuario_id == usuario_id,
         )
         .all()
     )
@@ -273,6 +260,22 @@ def cancelar_lancamento(id: int, db: Session = Depends(get_db), usuario = Depend
             pd.pago_anteriormente = False
             pd.data_pagamento = None
             pd.forma_pagamento = None
+
+
+@router.delete("/{id}")
+def cancelar_lancamento(id: int, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
+    lanc = (
+        db.query(models.Lancamento)
+        .filter(models.Lancamento.id == id, models.Lancamento.usuario_id == usuario.id)
+        .first()
+    )
+    if not lanc:
+        raise HTTPException(status_code=404, detail="Lançamento não encontrado.")
+    lanc.cancelado = True
+    for p in lanc.parcelas:
+        p.status = "cancelado"
+
+    _reconciliar_divida_lancamento(db, lanc.id, usuario.id)
 
     bump_user_sync_rev(db, usuario.id)
     db.commit()
@@ -307,6 +310,7 @@ def alterar_status_parcela(id: int, numero: int, status: str, db: Session = Depe
     if lanc and lanc.parcelas:
         if all(p.status == "cancelado" for p in lanc.parcelas):
             lanc.cancelado = True
+            _reconciliar_divida_lancamento(db, lanc.id, usuario.id)
         elif status != "cancelado" and lanc.cancelado:
             lanc.cancelado = False
 

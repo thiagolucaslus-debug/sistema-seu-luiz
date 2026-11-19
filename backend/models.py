@@ -66,7 +66,7 @@ class Cartao(Base):
     dia_fechamento = Column(Integer, default=20)
     dia_vencimento = Column(Integer, default=27)
     limite = Column(Float, default=0.0)
-    cor = Column(String(20), default="#8B5CF6")
+    cor = Column(String(20), default="#2563eb")
     ativo = Column(Boolean, default=True)
     created_at = Column(DateTime, server_default=func.now())
 

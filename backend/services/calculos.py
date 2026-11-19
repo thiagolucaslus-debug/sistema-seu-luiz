@@ -51,11 +51,18 @@ def calcular_saldo_pessoa_mes(db: Session, pessoa_id: int, mes: int, ano: int) -
                 else:
                     total_gastos_mes += parcela.valor
 
-    # Pagamentos recebidos neste mês
+    # Pagamentos recebidos antes deste mês abatem eventual saldo_anterior acumulado
     _, ultimo_dia = calendar.monthrange(ano, mes)
     data_inicio = date(ano, mes, 1)
     data_fim = date(ano, mes, ultimo_dia)
 
+    pagamentos_anteriores = db.query(models.PagamentoPessoa).filter(
+        models.PagamentoPessoa.pessoa_id == pessoa_id,
+        models.PagamentoPessoa.data < data_inicio
+    ).all()
+    saldo_anterior -= sum(p.valor for p in pagamentos_anteriores)
+
+    # Pagamentos recebidos neste mês
     pagamentos_mes = db.query(models.PagamentoPessoa).filter(
         models.PagamentoPessoa.pessoa_id == pessoa_id,
         models.PagamentoPessoa.data >= data_inicio,

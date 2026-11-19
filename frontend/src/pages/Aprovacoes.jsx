@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { solicitacoes, modulos as modulosApi, mediaUrl } from '../api/client';
 import Avatar from '../components/Avatar';
+import { getCardBrand } from '../components/cardBrand';
 import {
   CheckSquare, Check, X, AlertCircle, ShoppingBag, HandCoins,
   Calendar, CreditCard, Image as ImageIcon, ExternalLink, RefreshCw
@@ -216,7 +217,15 @@ export default function Aprovacoes() {
                       <>
                         <div className="flex justify-between items-center text-slate-300">
                           <span className="text-slate-400">Cartão Usado:</span>
-                          <span className="font-semibold text-ink">{sol.cartao_nome || 'Não especificado'}</span>
+                          <span className="font-semibold text-ink inline-flex items-center gap-1.5">
+                            {sol.cartao_nome && (
+                              <span
+                                className="w-2.5 h-2.5 rounded-full shrink-0"
+                                style={{ backgroundColor: getCardBrand(sol.cartao_nome, sol.cartao_cor).color }}
+                              />
+                            )}
+                            <span>{sol.cartao_nome || 'Não especificado'}</span>
+                          </span>
                         </div>
                         <div className="flex justify-between items-center text-slate-300">
                           <span className="text-slate-400">Parcelamento:</span>

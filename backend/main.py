@@ -1,6 +1,8 @@
 import os
+import re
 import sys
 import secrets
+import unicodedata
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -18,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from database import engine, Base, DATA_DIR, DB_PATH, CLOUD_CONFIG_DIR
 import models
-from tenancy import USER_OWNED_TABLES
+from tenancy import USER_OWNED_TABLES, normalize_legacy_issuer_card_colors
 from services.cloud_sync import CloudSyncManager
 from services.hub_sync import HubSyncASGIMiddleware, HubSyncClient
 from routers import (
@@ -118,6 +120,10 @@ def ensure_schema_and_migrations() -> None:
                     if fname and fname not in (".", ".."):
                         setattr(row, attr_name, f"/uploads/{fname}")
                         alterou_boot = True
+
+        # Normaliza cartões legados que receberam o antigo padrão intocado '#8B5CF6' para a cor real do emissor
+        if normalize_legacy_issuer_card_colors(session):
+            alterou_boot = True
 
         if alterou_boot:
             session.commit()

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import Avatar from '../components/Avatar';
+import { getCardBrand } from '../components/cardBrand';
 import { mediaUrl } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import {
@@ -394,9 +395,13 @@ function ModalRegistrarPagamento({ pessoa, contas, onClose, onSaved }) {
   );
 }
 
-function ModalZerarPessoa({ pessoa, mesInicial, anoInicial, onClose, onSaved }) {
+function ModalZerarPessoa({ pessoa, mesInicial, anoInicial, temLancamentosMes = true, saldoDevedorMes = 0, onClose, onSaved }) {
   const hoje = new Date();
-  const [opcao, setOpcao] = useState(mesInicial ? 'mes' : 'tudo');
+  const semComprasMasComDividaAnterior = Boolean(mesInicial && !temLancamentosMes && saldoDevedorMes > 0);
+  const [opcao, setOpcao] = useState(
+    mesInicial && !semComprasMasComDividaAnterior ? 'mes' : 'tudo'
+  );
+  const [abaterEscopo, setAbaterEscopo] = useState(mesInicial ? 'mes' : 'tudo');
   const [mes, setMes] = useState(mesInicial || (hoje.getMonth() + 1));
   const [ano, setAno] = useState(anoInicial || hoje.getFullYear());
   const [limparPagamentos, setLimparPagamentos] = useState(true);
@@ -408,7 +413,11 @@ function ModalZerarPessoa({ pessoa, mesInicial, anoInicial, onClose, onSaved }) 
     try {
       const payload =
         opcao === 'abater'
-          ? { modo: 'abater_divida', escopo: 'mes', mes: Number(mes), ano: Number(ano) }
+          ? (
+              abaterEscopo === 'tudo'
+                ? { modo: 'abater_divida', escopo: 'tudo' }
+                : { modo: 'abater_divida', escopo: 'mes', mes: Number(mes), ano: Number(ano) }
+            )
           : opcao === 'mes'
             ? { modo: 'apagar_lancamentos', escopo: 'mes', mes: Number(mes), ano: Number(ano), limpar_pagamentos: limparPagamentos }
             : { modo: 'apagar_lancamentos', escopo: 'tudo', limpar_pagamentos: limparPagamentos };
@@ -444,6 +453,12 @@ function ModalZerarPessoa({ pessoa, mesInicial, anoInicial, onClose, onSaved }) 
         </div>
 
         <form onSubmit={handleConfirmar} className="space-y-3.5">
+          {semComprasMasComDividaAnterior && (
+            <div className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/25 text-xs text-amber-500">
+              Este mês possui saldo pendente vindo de meses anteriores (<strong>{fmt(saldoDevedorMes)}</strong>). Para zerar tudo, mantenha <strong>Zerar Conta Completa</strong> ou escolha <strong>Apenas Quitar / Perdoar Dívida</strong>.
+            </div>
+          )}
+
           <label
             className={`block p-3.5 rounded-2xl border cursor-pointer transition-all ${
               opcao === 'tudo'
@@ -522,7 +537,37 @@ function ModalZerarPessoa({ pessoa, mesInicial, anoInicial, onClose, onSaved }) 
             </div>
           </label>
 
-          {(opcao === 'mes' || opcao === 'abater') && (
+          {opcao === 'abater' && (
+            <div className="p-3 rounded-2xl bg-[var(--raised)] border border-[var(--line)] space-y-2 text-xs">
+              <span className="label mb-1">Alcance do abatimento</span>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setAbaterEscopo('tudo')}
+                  className={`p-2.5 rounded-xl border text-left font-bold transition-all ${
+                    abaterEscopo === 'tudo'
+                      ? 'border-blue-500 bg-[var(--accent-tint)] text-blue-500'
+                      : 'border-[var(--line)] bg-[var(--surface)] text-[var(--muted)]'
+                  }`}
+                >
+                  Toda a dívida (incluindo parcelas futuras)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAbaterEscopo('mes')}
+                  className={`p-2.5 rounded-xl border text-left font-bold transition-all ${
+                    abaterEscopo === 'mes'
+                      ? 'border-blue-500 bg-[var(--accent-tint)] text-blue-500'
+                      : 'border-[var(--line)] bg-[var(--surface)] text-[var(--muted)]'
+                  }`}
+                >
+                  Somente até um mês específico
+                </button>
+              </div>
+            </div>
+          )}
+
+          {(opcao === 'mes' || (opcao === 'abater' && abaterEscopo === 'mes')) && (
             <div className="grid grid-cols-2 gap-3 p-3 rounded-2xl bg-[var(--raised)] border border-[var(--line)]">
               <div>
                 <label className="label">Mês</label>
@@ -830,7 +875,7 @@ function CardPessoa({ pessoa, contas, onRefresh, modoInativas = false }) {
   const [expanded, setExpanded] = useState(false);
   const [extrato, setExtrato] = useState(null);
   const [loadingExtrato, setLoadingExtrato] = useState(false);
-  const [mesAberto, setMesAberto] = useState(0);
+  const [mesAberto, setMesAberto] = useState(null);
   const [modalPagamento, setModalPagamento] = useState(false);
   const [modalEditar, setModalEditar] = useState(false);
   const [modalLink, setModalLink] = useState(false);
@@ -845,8 +890,17 @@ function CardPessoa({ pessoa, contas, onRefresh, modoInativas = false }) {
     setLoadingExtrato(true);
     try {
       const res = await pessoasApi.extrato(pessoa.id);
-      setExtrato(res.data);
-      if (!extrato) setMesAberto(0);
+      const novoExtrato = res.data;
+      setExtrato(novoExtrato);
+      const hist = novoExtrato?.historico || [];
+      const atualObj = hist.find((h) => h.is_atual) || hist[0];
+      const chavePadrao = atualObj ? `${atualObj.ano}-${atualObj.mes}` : null;
+      setMesAberto((prev) => {
+        if (prev && hist.some((h) => `${h.ano}-${h.mes}` === prev)) {
+          return prev;
+        }
+        return chavePadrao;
+      });
     } catch (e) {
       console.error(e);
     } finally {
@@ -1144,10 +1198,11 @@ function CardPessoa({ pessoa, contas, onRefresh, modoInativas = false }) {
             <div className="p-8 text-center text-[var(--muted)] text-sm">Carregando extrato de {pessoa.nome}...</div>
           ) : extrato ? (
             <div className="divide-y divide-[var(--line)]">
-              {extrato.historico.map((h, idx) => {
-                const isSelected = mesAberto === idx;
+              {extrato.historico.map((h) => {
+                const chaveMes = `${h.ano}-${h.mes}`;
+                const isSelected = mesAberto === chaveMes;
                 return (
-                  <div key={idx} className={`transition-all ${isSelected ? 'bg-blue-950/20 border-y border-blue-500/40 shadow-inner' : 'bg-[var(--surface)]'}`}>
+                  <div key={chaveMes} className={`transition-all ${isSelected ? 'bg-blue-950/20 border-y border-blue-500/40 shadow-inner' : 'bg-[var(--surface)]'}`}>
                     {/* Linha do Mês */}
                     <div
                       className={`p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 cursor-pointer transition-all border-l-4 ${
@@ -1157,7 +1212,7 @@ function CardPessoa({ pessoa, contas, onRefresh, modoInativas = false }) {
                             ? 'border-l-blue-400/50 bg-[var(--accent-tint)] hover-surface'
                             : 'border-l-transparent hover-surface'
                       }`}
-                      onClick={() => setMesAberto(isSelected ? null : idx)}
+                      onClick={() => setMesAberto(isSelected ? null : chaveMes)}
                     >
                       <div className="flex items-center gap-3 flex-wrap">
                         <span className={`font-black text-sm tracking-tight transition-colors ${
@@ -1241,7 +1296,12 @@ function CardPessoa({ pessoa, contas, onRefresh, modoInativas = false }) {
                           {(h.lancamentos.length > 0 || h.pagamentos.length > 0 || h.saldo_devedor > 0) && (
                             <button
                               type="button"
-                              onClick={() => setModalZerar({ mes: h.mes, ano: h.ano })}
+                              onClick={() => setModalZerar({
+                                mes: h.mes,
+                                ano: h.ano,
+                                temLancamentos: h.lancamentos.length > 0 || h.pagamentos.length > 0,
+                                saldoDevedor: h.saldo_devedor || 0,
+                              })}
                               className="btn-secondary text-xs py-1.5 px-3 text-amber-500 border-amber-500/30 hover:bg-amber-500/10"
                             >
                               <Eraser size={13} /> Limpar / Zerar {h.nome_mes}
@@ -1290,7 +1350,7 @@ function CardPessoa({ pessoa, contas, onRefresh, modoInativas = false }) {
                                         <span className="inline-flex items-center gap-1.5 font-medium">
                                           <span
                                             className="w-2.5 h-2.5 rounded-full shrink-0"
-                                            style={{ backgroundColor: item.cartao_cor || '#8B5CF6' }}
+                                            style={{ backgroundColor: getCardBrand(item.cartao, item.cartao_cor).color }}
                                           />
                                           💳 {item.cartao}
                                         </span>
@@ -1394,6 +1454,8 @@ function CardPessoa({ pessoa, contas, onRefresh, modoInativas = false }) {
           pessoa={pessoa}
           mesInicial={modalZerar.mes}
           anoInicial={modalZerar.ano}
+          temLancamentosMes={modalZerar.temLancamentos ?? true}
+          saldoDevedorMes={modalZerar.saldoDevedor ?? pessoa.saldo_devedor ?? 0}
           onClose={() => setModalZerar(null)}
           onSaved={recarregarTudo}
         />

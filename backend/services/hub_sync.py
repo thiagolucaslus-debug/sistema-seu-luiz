@@ -302,6 +302,7 @@ class HubSyncClient:
                     "modulos": "modulo",
                     "subcategorias": "subcategoria",
                     "lancamentos": "lancamento",
+                    "pagamentos_pessoa": "pagamento_pessoa",
                     "dividas": "divida",
                     "divida_parcelas": "divida_parcela",
                 }
@@ -349,6 +350,11 @@ class HubSyncClient:
                             if seg.isdigit() and int(seg) == old_id:
                                 suffix = ("/" + rest.split("/", 1)[1]) if "/" in rest else ""
                                 it["path"] = f"{pfx}{new_id}{suffix}"
+                                changed = True
+                        if kind == "pagamento_pessoa" and p_str.startswith("/pessoas/") and "/pagamento/" in p_str:
+                            head_p, pag_seg = p_str.rsplit("/pagamento/", 1)
+                            if pag_seg.isdigit() and int(pag_seg) == old_id:
+                                it["path"] = f"{head_p}/pagamento/{new_id}"
                                 changed = True
                         ct_str = str(it.get("content_type") or "").lower()
                         b64_str = str(it.get("body_b64") or "")
@@ -712,6 +718,7 @@ class HubSyncClient:
             "modulo": {},
             "subcategoria": {},
             "lancamento": {},
+            "pagamento_pessoa": {},
             "divida": {},
             "divida_parcela": {},
         }
@@ -742,6 +749,11 @@ class HubSyncClient:
                         new_seg = str(id_remaps[kind][int(seg)])
                         suffix = ("/" + rest.split("/", 1)[1]) if "/" in rest else ""
                         path = f"{prefix}{new_seg}{suffix}"
+
+            if path.startswith("/pessoas/") and "/pagamento/" in path:
+                head_p, pag_seg = path.rsplit("/pagamento/", 1)
+                if pag_seg.isdigit() and int(pag_seg) in id_remaps["pagamento_pessoa"]:
+                    path = f"{head_p}/pagamento/{id_remaps['pagamento_pessoa'][int(pag_seg)]}"
 
             if "application/json" in ct.lower() and raw_body:
                 try:
@@ -1094,6 +1106,8 @@ def _infer_entity_kind(method: str, path: str) -> str | None:
     clean_path = path.rstrip("/")
     if clean_path.startswith("/dividas/") and clean_path.endswith("/pagar"):
         return "divida_parcela"
+    if clean_path.startswith("/pessoas/") and clean_path.endswith("/pagamento"):
+        return "pagamento_pessoa"
     mapping = {
         "/contas/": "conta",
         "/contas": "conta",
