@@ -10,6 +10,8 @@ from datetime import date
 
 router = APIRouter(prefix="/modulos", tags=["modulos"])
 
+TIPOS_NAO_DESPESA = ("receita", "transferencia", "compra_para_mim")
+
 class ModuloCreate(BaseModel):
     nome: str
     icone: str = "folder"
@@ -35,10 +37,11 @@ def listar_modulos(mes: Optional[int] = None, ano: Optional[int] = None, db: Ses
     )
     resultado = []
     for m in modulos:
-        # Gastos deste mês vinculados a este módulo
+        # Gastos reais deste mês vinculados a este módulo (exclui receitas/transferências/abatimentos, alinhado ao Dashboard)
         parcelas_mes = db.query(models.Parcela).join(models.Lancamento).filter(
             models.Lancamento.usuario_id == usuario.id,
             models.Lancamento.modulo_id == m.id,
+            models.Lancamento.tipo.notin_(TIPOS_NAO_DESPESA),
             models.Parcela.mes == (mes or hoje.month),
             models.Parcela.ano == (ano or hoje.year),
             models.Parcela.status != "cancelado",
@@ -129,6 +132,7 @@ def gastos_modulo(id: int, mes: Optional[int] = None, ano: Optional[int] = None,
     parcelas = db.query(models.Parcela).join(models.Lancamento).filter(
         models.Lancamento.usuario_id == usuario.id,
         models.Lancamento.modulo_id == id,
+        models.Lancamento.tipo.notin_(TIPOS_NAO_DESPESA),
         models.Parcela.mes == mes,
         models.Parcela.ano == ano,
         models.Parcela.status != "cancelado",
@@ -141,6 +145,7 @@ def gastos_modulo(id: int, mes: Optional[int] = None, ano: Optional[int] = None,
         itens.append({
             "lancamento_id": l.id,
             "descricao": l.descricao,
+            "tipo": l.tipo,
             "valor": p.valor,
             "parcela": f"{p.numero}/{l.total_parcelas}" if l.total_parcelas > 1 else "À vista",
             "pessoa": l.pessoa.nome if l.pessoa else "Você",

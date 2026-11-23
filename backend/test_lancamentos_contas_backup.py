@@ -589,3 +589,309 @@ def test_protecoes_anti_wipe_nuvem_fria_e_hub_sync(tmp_path: Path, monkeypatch):
         assert pulled["called"] is False
     finally:
         env["cleanup"]()
+
+
+def test_modulos_exclui_receita_e_transferencia_alinhado_ao_dashboard(tmp_path: Path):
+    """Receitas e transferências vinculadas a um módulo NÃO podem inflar gastos de /modulos/ nem divergir do Dashboard."""
+    env = _build_test_app(tmp_path)
+    try:
+        c = env["client"]
+        headers = _auth_headers(c, "luiz", "senha123", "Francisco Luiz", is_first=True)
+        c1 = c.post("/contas/", json={"nome": "Itaú", "banco": "Itaú", "saldo_inicial": 1000.0}, headers=headers).json()["id"]
+        c2 = c.post("/contas/", json={"nome": "BB", "banco": "BB", "saldo_inicial": 0.0}, headers=headers).json()["id"]
+        mid = c.post("/modulos/", json={"nome": "Casa", "cor": "#10b981"}, headers=headers).json()["id"]
+
+        assert c.post(
+            f"/contas/{c1}/movimentar",
+            json={"tipo": "entrada", "valor": 500.0, "descricao": "Depósito Casa", "modulo_id": mid, "data_lancamento": "2026-11-22"},
+            headers=headers,
+        ).status_code == 200
+        assert c.post(
+            f"/contas/{c1}/movimentar",
+            json={"tipo": "saida", "valor": 120.0, "descricao": "Luz Casa", "modulo_id": mid, "data_lancamento": "2026-11-22"},
+            headers=headers,
+        ).status_code == 200
+        assert c.post(
+            "/lancamentos/",
+            json={
+                "descricao": "Transf Casa",
+                "tipo": "transferencia",
+                "valor_total": 200.0,
+                "data_lancamento": "2026-11-22",
+                "conta_id": c1,
+                "conta_destino_id": c2,
+                "modulo_id": mid,
+            },
+            headers=headers,
+        ).status_code == 200
+
+        dash_mod = next(m for m in c.get("/relatorios/dashboard?mes=11&ano=2026", headers=headers).json()["modulos"] if m["id"] == mid)
+        list_mod = next(m for m in c.get("/modulos/?mes=11&ano=2026", headers=headers).json() if m["id"] == mid)
+        gastos_mod = c.get(f"/modulos/{mid}/gastos?mes=11&ano=2026", headers=headers).json()
+
+        assert dash_mod["total"] == 120.0
+        assert list_mod["total_mes_atual"] == 120.0
+        assert gastos_mod["total"] == 120.0
+        assert [it["descricao"] for it in gastos_mod["lancamentos"]] == ["Luz Casa"]
+    finally:
+        env["cleanup"]()
+
+
+def test_lancamentos_validacao_estrita_e_busca(tmp_path: Path):
+    """Valida campos inválidos em POST /lancamentos/ e busca textual em GET /lancamentos/."""
+    env = _build_test_app(tmp_path)
+    try:
+        c = env["client"]
+        headers = _auth_headers(c, "luiz", "senha123", "Francisco Luiz", is_first=True)
+        card_id = c.post("/cartoes/", json={"nome": "Nubank", "dia_fechamento": 5, "dia_vencimento": 12}, headers=headers).json()["id"]
+        c1 = c.post("/contas/", json={"nome": "Caixa", "banco": "Caixa", "saldo_inicial": 500.0}, headers=headers).json()["id"]
+
+        # Descrição vazia
+        assert c.post("/lancamentos/", json={"descricao": "   ", "tipo": "compra_cartao", "valor_total": 50, "data_lancamento": "2026-11-22", "cartao_id": card_id}, headers=headers).status_code == 400
+        # Tipo inválido
+        assert c.post("/lancamentos/", json={"descricao": "Teste", "tipo": "inventado", "valor_total": 50, "data_lancamento": "2026-11-22"}, headers=headers).status_code == 400
+        # compra_cartao sem cartao_id
+        assert c.post("/lancamentos/", json={"descricao": "Sem cartao", "tipo": "compra_cartao", "valor_total": 50, "data_lancamento": "2026-11-22"}, headers=headers).status_code == 400
+        # transferencia sem conta_destino_id
+        assert c.post("/lancamentos/", json={"descricao": "Transf incompleta", "tipo": "transferencia", "valor_total": 50, "data_lancamento": "2026-11-22", "conta_id": c1}, headers=headers).status_code == 400
+        # mes_fatura inválido
+        assert c.post("/lancamentos/", json={"descricao": "Mes 99", "tipo": "compra_cartao", "valor_total": 50, "data_lancamento": "2026-11-22", "cartao_id": card_id, "mes_fatura": 99, "ano_fatura": 2026}, headers=headers).status_code == 400
+        # total_parcelas fora do intervalo
+        assert c.post("/lancamentos/", json={"descricao": "200x", "tipo": "compra_cartao", "valor_total": 50, "total_parcelas": 200, "data_lancamento": "2026-11-22", "cartao_id": card_id}, headers=headers).status_code == 400
+
+        # Lançamentos válidos + busca textual
+        assert c.post("/lancamentos/", json={"descricao": "Farmácia Drogasil", "tipo": "compra_cartao", "valor_total": 85.5, "data_lancamento": "2026-11-22", "cartao_id": card_id}, headers=headers).status_code == 200
+        assert c.post("/lancamentos/", json={"descricao": "Mercado Extra", "tipo": "despesa_conta", "valor_total": 140.0, "data_lancamento": "2026-11-22", "conta_id": c1}, headers=headers).status_code == 200
+
+        r_busca = c.get("/lancamentos/?mes=0&busca=drogasil", headers=headers)
+        assert r_busca.status_code == 200
+        assert [it["descricao"] for it in r_busca.json()["items"]] == ["Farmácia Drogasil"]
+    finally:
+        env["cleanup"]()
+
+
+def test_restore_zip_legado_multi_usuario_isola_por_email_e_preserva_logo(tmp_path: Path):
+    """Backup SQLite legado multi-usuário com IDs trocados restaura pelo email (nunca vaza outro perfil) e restaura logo_path."""
+    env = _build_test_app(tmp_path)
+    try:
+        c = env["client"]
+        headers_admin = _auth_headers(c, "admin", "senha123", "Administrador", is_first=True)
+        headers_luiz = _auth_headers(c, "luiz", "senha123", "Francisco Luiz", is_first=False)
+
+        # Cria um banco SQLite legado onde luiz tem id=1 e admin tem id=2 (IDs invertidos!)
+        leg_db = tmp_path / "legacy_swapped.db"
+        leg_eng = create_engine(f"sqlite:///{leg_db}", connect_args={"check_same_thread": False})
+        models.Base.metadata.create_all(bind=leg_eng)
+        LSL = sessionmaker(bind=leg_eng)
+        ls = LSL()
+        try:
+            u_luiz = models.Usuario(id=1, nome="Francisco Luiz", email="luiz", senha_hash="x", logo_path="/uploads/avatar_luiz.jpg")
+            u_admin = models.Usuario(id=2, nome="Admin", email="admin", senha_hash="y")
+            ls.add_all([u_luiz, u_admin])
+            ls.flush()
+            ls.add(models.ContaBancaria(usuario_id=1, nome="CONTA_REAL_LUIZ", banco="BB", saldo_inicial=777.0))
+            ls.add(models.ContaBancaria(usuario_id=2, nome="CONTA_SECRETA_ADMIN", banco="Bradesco", saldo_inicial=999.0))
+            ls.commit()
+        finally:
+            ls.close()
+            leg_eng.dispose()
+
+        zbuf = io.BytesIO()
+        with zipfile.ZipFile(zbuf, "w") as zf:
+            zf.write(leg_db, arcname="financeiro.db")
+            zf.writestr("uploads/avatar_luiz.jpg", b"\xff\xd8\xff\xe0fakejpg")
+
+        # Luiz (id=2 no banco principal) restaura o ZIP legado -> deve puxar APENAS CONTA_REAL_LUIZ!
+        r_ok = c.post(
+            "/cloud/restore-backup",
+            files={"file": ("legacy_multi.zip", zbuf.getvalue(), "application/zip")},
+            headers=headers_luiz,
+        )
+        assert r_ok.status_code == 200, r_ok.text
+        luiz_contas = [x["nome"] for x in c.get("/contas/", headers=headers_luiz).json()]
+        assert luiz_contas == ["CONTA_REAL_LUIZ"]
+        assert "CONTA_SECRETA_ADMIN" not in luiz_contas
+        # Logo restaurado no perfil e em uploads/
+        me_luiz = c.get("/auth/me", headers=headers_luiz).json()
+        assert me_luiz["logo_path"] == "/uploads/avatar_luiz.jpg"
+        assert (env["uploads_dir"] / "avatar_luiz.jpg").is_file()
+
+        # Um terceiro perfil ('maria') que NÃO existe no backup multi-usuário deve receber 400 (nunca puxar dados de outro)
+        headers_maria = _auth_headers(c, "maria", "senha123", "Maria", is_first=False)
+        r_refuse = c.post(
+            "/cloud/restore-backup",
+            files={"file": ("legacy_multi.zip", zbuf.getvalue(), "application/zip")},
+            headers=headers_maria,
+        )
+        assert r_refuse.status_code == 400
+    finally:
+        env["cleanup"]()
+
+
+def test_desktop_hub_sync_preserva_headers_backup_agora_e_remap_movimentar_offline(tmp_path: Path):
+    """No modo Desktop: preserva headers X-Auto-Saved/X-Cloud-Sync-*, sincroniza /cloud/backup-agora com Hub e remapeia movimentar offline."""
+    from services.hub_sync import HubSyncASGIMiddleware
+
+    hub_env = _build_test_app(tmp_path / "hub", is_cloud_container=True)
+    pc_env = _build_test_app(tmp_path / "pc", is_cloud_container=False)
+    try:
+        hub_client_http = hub_env["client"]
+        # Configura Hub com um usuário pré-existente (luiz) e 1 conta
+        h_hub_luiz = _auth_headers(hub_client_http, "luiz", "senha123", "Francisco Luiz", is_first=True)
+        hub_conta_id = hub_client_http.post(
+            "/contas/",
+            json={"nome": "Conta Hub", "banco": "Itaú", "saldo_inicial": 1000.0},
+            headers=h_hub_luiz,
+        ).json()["id"]
+        # Cria 1 lançamento extra no Hub para forçar IDs diferentes entre PC offline e Hub!
+        hub_client_http.post(
+            f"/contas/{hub_conta_id}/movimentar",
+            json={"tipo": "entrada", "valor": 50.0, "descricao": "Bonus Hub"},
+            headers=h_hub_luiz,
+        )
+
+        # Configura transporte do PC falando direto com o TestClient do Hub (com chave liga/desliga offline)
+        net_state = {"online": True, "hub_backup_calls": 0}
+
+        def hub_transport(method, url, headers=None, data=None, timeout=12.0):
+            if not net_state["online"]:
+                raise OSError("Sem internet")
+            rel_path = url.replace("https://hub.local", "")
+            if method.upper() == "POST" and rel_path == "/cloud/backup-agora":
+                net_state["hub_backup_calls"] += 1
+            resp = hub_client_http.request(method, rel_path, headers=headers or {}, content=data)
+            resp_hdrs = {k.lower(): v for k, v in resp.headers.items()}
+            if method.upper() in ("POST", "PUT", "PATCH", "DELETE") and rel_path.startswith("/contas/"):
+                resp_hdrs["x-auto-saved"] = "true"
+                resp_hdrs["x-cloud-sync-status"] = "synced"
+                resp_hdrs["x-cloud-sync-rev"] = "77"
+            return resp.status_code, resp_hdrs, resp.content
+
+        hub_sync = HubSyncClient(
+            data_dir=pc_env["data_dir"],
+            db_path=pc_env["db_path"],
+            hub_url="https://hub.local",
+            http_transport=hub_transport,
+            enabled=True,
+            version_poll_interval_sec=0.0,
+            offline_cooldown_sec=0.0,
+        )
+        # Monta app PC com HubSyncASGIMiddleware e registra hub_sync no router cloud
+        pc_app = FastAPI()
+        for router_mod in (auth_router, cartoes, contas, pessoas, modulos, lancamentos, relatorios, cloud, sync_hub):
+            pc_app.include_router(router_mod.router)
+        import database as db_mod
+
+        def pc_get_db():
+            s = pc_env["SessionLocal"]()
+            try:
+                yield s
+            finally:
+                s.close()
+
+        pc_app.dependency_overrides[db_mod.get_db] = pc_get_db
+        pc_app.dependency_overrides[cloud.get_cloud_manager] = lambda: pc_env["cloud_mgr"]
+        pc_app.dependency_overrides[cloud.get_hub_client] = lambda: hub_sync
+        pc_app.add_middleware(HubSyncASGIMiddleware, hub_client=hub_sync)
+
+        try:
+            pc_c = TestClient(pc_app)
+
+            # 1) Login no PC sincroniza snapshot do Hub
+            r_login = pc_c.post("/auth/login", json={"usuario": "luiz", "senha": "senha123"})
+            assert r_login.status_code == 200
+            h_pc = {"Authorization": f"Bearer {r_login.json()['access_token']}"}
+
+            # 2) Mutação online preserva headers X-Auto-Saved / X-Cloud-Sync-Status / X-Cloud-Sync-Rev!
+            r_on = pc_c.post(
+                f"/contas/{hub_conta_id}/movimentar",
+                json={"tipo": "entrada", "valor": 100.0, "descricao": "Online PC"},
+                headers=h_pc,
+            )
+            assert r_on.status_code == 200
+            assert r_on.headers.get("x-auto-saved") == "true"
+            assert r_on.headers.get("x-cloud-sync-status") == "synced"
+            assert r_on.headers.get("x-cloud-sync-rev") == "77"
+
+            # 3) Hub cria um lançamento extra no servidor (para deslocar autoincremento de IDs!)
+            hub_client_http.post(
+                f"/contas/{hub_conta_id}/movimentar",
+                json={"tipo": "entrada", "valor": 25.0, "descricao": "Outro Hub"},
+                headers=h_hub_luiz,
+            )
+
+            # 4) PC fica OFFLINE -> faz movimentar na conta e depois cancela esse mesmo lançamento!
+            net_state["online"] = False
+            r_off_mov = pc_c.post(
+                f"/contas/{hub_conta_id}/movimentar",
+                json={"tipo": "saida", "valor": 40.0, "descricao": "Saida Offline Remap"},
+                headers=h_pc,
+            )
+            assert r_off_mov.status_code == 200
+            local_lanc_id = r_off_mov.json()["lancamento_id"]
+
+            r_off_del = pc_c.delete(f"/lancamentos/{local_lanc_id}", headers=h_pc)
+            assert r_off_del.status_code == 200
+
+            # GET /cloud/status no PC expõe hub_outbox_count == 2!
+            st_off = pc_c.get("/cloud/status", headers=h_pc).json()
+            assert st_off["hub_sync_enabled"] is True
+            assert st_off["hub_outbox_count"] == 2
+
+            # 5) Internet volta -> clicar Backup (/cloud/backup-agora) drena outbox + remapeia ID + chama Hub!
+            net_state["online"] = True
+            r_bak = pc_c.post("/cloud/backup-agora", headers=h_pc)
+            assert r_bak.status_code == 200, r_bak.text
+            assert net_state["hub_backup_calls"] == 1
+            assert r_bak.json()["status"]["hub_outbox_count"] == 0
+
+            # "Saida Offline Remap" foi criada E cancelada corretamente no Hub (zero fantasma!)
+            hub_descs = [it["descricao"] for it in hub_client_http.get("/lancamentos/?mes=0", headers=h_hub_luiz).json()["items"]]
+            assert "Saida Offline Remap" not in hub_descs
+            assert "Online PC" in hub_descs
+            assert "Outro Hub" in hub_descs
+        finally:
+            pass
+    finally:
+        pc_env["cleanup"]()
+        hub_env["cleanup"]()
+
+
+def test_gdrive_mirror_com_cofre_ativo_expoe_url_e_envia_copia_sem_bloqueio(tmp_path: Path):
+    """Ao conectar Google Drive com Cofre 24/7 já ativo, espelha imediatamente para o Drive e expõe gdrive_folder_url separado."""
+    env = _build_test_app(tmp_path)
+    try:
+        mgr: CloudSyncManager = env["cloud_mgr"]
+        _auth_headers(env["client"], "luiz", "senha123", "Francisco Luiz", is_first=True)
+        mgr.vault_credentials = {"repo": "owner/vault", "github_token": "tok", "aes_key": "k"}
+        mgr.meta["folder_url"] = "https://github.com/owner/vault"
+
+        mirror_called = {"count": 0}
+
+        def fake_fetch_email(force_refresh: bool = False):
+            return "luiz@gmail.com"
+
+        def fake_gdrive_sync(*, force: bool = False, reason: str = "manual", mirror_mode: bool = False):
+            mirror_called["count"] += 1
+            assert mirror_mode is True
+            mgr.meta["gdrive_folder_url"] = "https://drive.google.com/drive/folders/folder123"
+            mgr.meta["gdrive_last_sync_at"] = 1700000000.0
+            return {"ok": True, "action": "synced", "folder_url": mgr.meta["gdrive_folder_url"]}
+
+        mgr._fetch_account_email = fake_fetch_email  # type: ignore[method-assign]
+        mgr._gdrive_sync_now = fake_gdrive_sync  # type: ignore[method-assign]
+
+        # Mesmo que o caller passe restore_first=True, com Cofre ativo deve ESPELHAR para o Drive (nunca sobrescrever o Cofre)
+        st = mgr.import_oauth_token(
+            {"refresh_token": "rt_valid", "access_token": "at_valid"},
+            restore_first=True,
+            sync_immediately=True,
+        )
+        assert mirror_called["count"] == 1
+        assert st["vault_connected"] is True
+        assert st["gdrive_connected"] is True
+        assert st["folder_url"] == "https://github.com/owner/vault"
+        assert st["gdrive_folder_url"] == "https://drive.google.com/drive/folders/folder123"
+        assert st["gdrive_last_sync_at"] == 1700000000.0
+    finally:
+        env["cleanup"]()

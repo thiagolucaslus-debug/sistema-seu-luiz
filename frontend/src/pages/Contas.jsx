@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   contas as contasApi,
   lancamentos as lancamentosApi,
@@ -453,7 +453,7 @@ function ModalAjustarSaldoConta({ conta, onClose, onSaved }) {
   );
 }
 
-function CardConta({ conta, pessoas, modulos, onRefresh, onNotice }) {
+function CardConta({ conta, pessoas, modulos, refreshTick, onRefresh, onNotice }) {
   const [expanded, setExpanded] = useState(false);
   const [extrato, setExtrato] = useState(null);
   const [loadingExtrato, setLoadingExtrato] = useState(false);
@@ -476,7 +476,7 @@ function CardConta({ conta, pessoas, modulos, onRefresh, onNotice }) {
     if (expanded) {
       carregarExtrato();
     }
-  }, [conta.saldo_atual, expanded]);
+  }, [conta.saldo_atual, expanded, refreshTick]);
 
   const handleToggle = () => {
     setExpanded(prev => !prev);
@@ -485,9 +485,6 @@ function CardConta({ conta, pessoas, modulos, onRefresh, onNotice }) {
   const handleAfterMove = async (msg) => {
     if (onNotice && msg) onNotice(msg);
     await onRefresh();
-    if (expanded) {
-      await carregarExtrato();
-    }
   };
 
   const handleCancelarMov = async (mov) => {
@@ -665,6 +662,8 @@ export default function Contas() {
   const [loading, setLoading] = useState(true);
   const [modalNovo, setModalNovo] = useState(false);
   const [notice, setNotice] = useState('');
+  const [refreshTick, setRefreshTick] = useState(0);
+  const noticeTimerRef = useRef(null);
 
   const carregar = async () => {
     setLoading(true);
@@ -677,6 +676,7 @@ export default function Contas() {
       setLista(resC.data);
       setPessoas(resP.data);
       setModulos(resM.data);
+      setRefreshTick(t => t + 1);
     } catch (e) {
       console.error(e);
     } finally {
@@ -686,11 +686,15 @@ export default function Contas() {
 
   useEffect(() => {
     carregar();
+    return () => {
+      if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
+    };
   }, []);
 
   const showNotice = (msg) => {
+    if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
     setNotice(msg);
-    setTimeout(() => setNotice(''), 6000);
+    noticeTimerRef.current = setTimeout(() => setNotice(''), 6000);
   };
 
   const saldoTotal = lista.reduce((acc, c) => acc + c.saldo_atual, 0);
@@ -745,6 +749,7 @@ export default function Contas() {
               conta={c}
               pessoas={pessoas}
               modulos={modulos}
+              refreshTick={refreshTick}
               onRefresh={carregar}
               onNotice={showNotice}
             />

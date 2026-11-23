@@ -76,11 +76,17 @@ api.interceptors.response.use(
   },
   (error) => {
     if (isTrackedMutation(error.config)) {
-      emitSaveState({
-        state: 'error',
-        message: error.response?.data?.detail || error.message || 'Erro ao salvar',
-        at: Date.now(),
-      });
+      const status = error.response?.status;
+      // Erros 4xx são validações de formulário (não falha de persistência/nuvem)
+      if (status && status >= 400 && status < 500) {
+        emitSaveState({ state: 'idle', at: Date.now() });
+      } else {
+        emitSaveState({
+          state: 'error',
+          message: error.response?.data?.detail || error.message || 'Erro ao salvar',
+          at: Date.now(),
+        });
+      }
     }
     const token = localStorage.getItem('token');
     const sentToken = error.config?.headers?.Authorization;
@@ -214,9 +220,16 @@ export const cloud = {
   syncNow: () => api.post('/cloud/sync'),
   backupAgora: () => api.post('/cloud/backup-agora'),
   restoreNow: (data = { force: true }) => api.post('/cloud/restore', data),
-  restoreBackup: (formData) => api.post('/cloud/restore-backup', formData, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-  }),
+  restoreBackup: (input) => {
+    const formData = input instanceof FormData ? input : (() => {
+      const fd = new FormData();
+      fd.append('file', input);
+      return fd;
+    })();
+    return api.post('/cloud/restore-backup', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
   disconnect: () => api.delete('/cloud/disconnect'),
   downloadBackupZip: () => api.get('/cloud/backup-zip', { responseType: 'blob' }),
 };

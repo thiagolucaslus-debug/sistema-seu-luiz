@@ -187,6 +187,7 @@ hub_sync_client = HubSyncClient(
     db_path=DB_PATH,
     on_local_change=lambda reason: cloud_sync_manager.create_local_auto_backup(reason=reason),
 )
+cloud.set_hub_client(hub_sync_client)
 
 app = FastAPI(
     title="Administração Financeira API",

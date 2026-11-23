@@ -253,22 +253,23 @@ function NuvemGoogleDrive() {
     }
   }
 
-  async function ativarComCodigo(event) {
+  async function ativarComCodigo(event, forceMirrorOnly = false) {
     event.preventDefault();
     if (!tokenInput.trim()) return;
     setBusy(true);
     setMessage(null);
+    const shouldRestore = forceMirrorOnly ? false : restoreFirst;
     try {
       const { data } = await cloud.importToken({
         token: tokenInput.trim(),
-        restore_first: restoreFirst,
+        restore_first: shouldRestore,
         sync_immediately: true,
       });
       if (data.access_token) localStorage.setItem('token', data.access_token);
       setStatus(data);
       setTokenInput('');
-      if (restoreFirst) await sincronizarPerfilRestaurado();
-      setMessage({ text: `Google Drive conectado (${data.account || 'conta vinculada'})! Seus dados estão protegidos.` });
+      if (shouldRestore) await sincronizarPerfilRestaurado();
+      setMessage({ text: `Google Drive conectado (${data.gdrive_account || data.account || 'conta vinculada'})! Seus dados estão protegidos.` });
     } catch (error) {
       setMessage({ error: true, text: detail(error, 'Código inválido ou expirado.') });
     } finally {
@@ -374,12 +375,14 @@ function NuvemGoogleDrive() {
     setBusy(true);
     setMessage(null);
     try {
-      const { data } = await cloud.restoreBackup(file);
+      const formData = new FormData();
+      formData.append('file', file);
+      const { data } = await cloud.restoreBackup(formData);
       await sincronizarPerfilRestaurado();
       await carregarStatus();
-      const r = data?.restored || {};
+      const r = data?.counts || {};
       setMessage({
-        text: `Backup restaurado com sucesso! (${r.lancamentos ?? 0} lançamentos, ${r.cartoes ?? 0} cartões, ${r.contas_bancarias ?? 0} contas, ${r.pessoas ?? 0} pessoas).`,
+        text: data?.mensagem || `Backup restaurado com sucesso! (${r.lancamentos ?? 0} lançamentos, ${r.cartoes ?? 0} cartões, ${r.contas_bancarias ?? 0} contas, ${r.pessoas ?? 0} pessoas).`,
       });
     } catch (error) {
       setMessage({ error: true, text: detail(error, 'Não foi possível restaurar o arquivo de backup.') });
@@ -437,14 +440,22 @@ function NuvemGoogleDrive() {
           <div className="rounded-xl border p-3 text-sm space-y-1" style={{ borderColor: 'var(--line)', background: 'var(--raised)' }}>
             {status.account && <p><strong>{status.vault_connected ? 'Cofre em Nuvem:' : 'Conta Google:'}</strong> {status.account}</p>}
             {status.gdrive_connected && status.vault_connected && (
-              <p><strong>Google Drive extra:</strong> Conectado ({status.folder_name || 'Administração Financeira - Backup Nuvem'})</p>
+              <p>
+                <strong>Google Drive extra:</strong> Conectado ({status.gdrive_account || status.folder_name || 'Backup Automático'})
+                {status.gdrive_last_sync_at ? ` • ${formatCloudTimestamp(status.gdrive_last_sync_at)}` : ''}
+              </p>
             )}
             {!status.vault_connected && <p><strong>Pasta privada:</strong> {status.folder_name}</p>}
             <p><strong>Último salvamento:</strong> {formatCloudTimestamp(status.last_sync_at)} {status.revision ? `(rev. #${status.revision})` : ''}</p>
             <p><strong>Arquivos protegidos:</strong> Banco SQLite íntegro + {status.uploads_synced_count || 0} foto(s)/comprovante(s)</p>
-            {status.folder_url && (status.gdrive_connected || !status.vault_connected) && (
+            {(status.gdrive_folder_url || (!status.vault_connected && status.folder_url)) && (
               <p className="pt-1">
-                <a href={status.folder_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 font-semibold text-blue-600 hover:underline">
+                <a
+                  href={status.gdrive_folder_url || status.folder_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 font-semibold text-blue-600 hover:underline"
+                >
                   Abrir pasta no Google Drive <ExternalLink size={14} />
                 </a>
               </p>
@@ -498,7 +509,7 @@ function NuvemGoogleDrive() {
                   <Cloud size={15} /> Conectar Google Drive em 1 Clique
                 </button>
               )}
-              <form onSubmit={ativarComCodigo} className="space-y-2 pt-1">
+              <form onSubmit={event => ativarComCodigo(event, true)} className="space-y-2 pt-1">
                 <input
                   className="input text-xs"
                   placeholder="Cole aqui seu código GDRIVE1:... ou JSON"
@@ -577,6 +588,14 @@ function NuvemGoogleDrive() {
         </div>
       )}
 
+      {status.hub_sync_enabled && status.hub_outbox_count > 0 && (
+        <p role="status" className="feedback feedback--error">
+          {status.hub_outbox_count} alteração(ões) offline aguardando envio automático para a nuvem.
+        </p>
+      )}
+      {status.gdrive_last_error && !message && (
+        <p role="alert" className="feedback feedback--error">Espelho Google Drive: {status.gdrive_last_error}</p>
+      )}
       {status.last_error && !message && (
         <p role="alert" className="feedback feedback--error">{status.last_error}</p>
       )}

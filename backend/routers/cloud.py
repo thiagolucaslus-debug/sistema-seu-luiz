@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import os
@@ -24,11 +25,21 @@ router = APIRouter(prefix="/cloud", tags=["cloud"])
 DEFAULT_VAULT_HYDRATE_SHA256 = "acbadc614164fd8b0089d5435a96b69a88a9e19adb5c788d8eaad0ea5354c62b"
 
 _manager_instance: CloudSyncManager | None = None
+_hub_client_instance: Any = None
 
 
 def set_cloud_manager(manager: CloudSyncManager) -> None:
     global _manager_instance
     _manager_instance = manager
+
+
+def set_hub_client(hub_client: Any) -> None:
+    global _hub_client_instance
+    _hub_client_instance = hub_client
+
+
+def get_hub_client() -> Any:
+    return _hub_client_instance
 
 
 def get_cloud_manager() -> CloudSyncManager:
@@ -208,8 +219,24 @@ def _user_scoped_counts(usuario_id: int, mgr: CloudSyncManager) -> tuple[dict[st
         conn.close()
 
 
-def _scoped_status_for_user(usuario: models.Usuario, mgr: CloudSyncManager) -> dict[str, Any]:
+def _scoped_status_for_user(
+    usuario: models.Usuario,
+    mgr: CloudSyncManager,
+    hub_client: Any = None,
+) -> dict[str, Any]:
     st = mgr.status()
+    if hub_client is None and not mgr.is_cloud_container:
+        hub_client = get_hub_client()
+    if hub_client is not None and not mgr.is_cloud_container and hub_client.is_enabled():
+        try:
+            st.update(hub_client.get_user_hub_status(str(usuario.email or "")))
+        except Exception:
+            pass
+    else:
+        st.setdefault("hub_sync_enabled", False)
+        st.setdefault("hub_outbox_count", 0)
+        st.setdefault("hub_online", False)
+
     if _is_primary_owner(usuario, mgr):
         st["is_primary_owner"] = True
         return st
@@ -217,6 +244,7 @@ def _scoped_status_for_user(usuario: models.Usuario, mgr: CloudSyncManager) -> d
     st["is_primary_owner"] = False
     st["account"] = "Nuvem Automática 24/7 (Perfil Isolado)" if st.get("connected") else ""
     st["folder_url"] = ""
+    st["gdrive_folder_url"] = ""
     st["counts"] = user_counts
     st["uploads_synced_count"] = user_uploads
     return st
@@ -226,8 +254,9 @@ def _scoped_status_for_user(usuario: models.Usuario, mgr: CloudSyncManager) -> d
 def obter_status_nuvem(
     usuario: models.Usuario = Depends(auth.get_usuario_atual),
     mgr: CloudSyncManager = Depends(get_cloud_manager),
+    hub_client: Any = Depends(get_hub_client),
 ):
-    return _scoped_status_for_user(usuario, mgr)
+    return _scoped_status_for_user(usuario, mgr, hub_client=hub_client)
 
 
 @router.post("/configure-client")
@@ -459,36 +488,52 @@ def baixar_backup_zip(
 def executar_backup_completo_agora(
     usuario: models.Usuario = Depends(auth.get_usuario_atual),
     mgr: CloudSyncManager = Depends(get_cloud_manager),
+    hub_client: Any = Depends(get_hub_client),
 ):
     """
     Salva imediatamente o arquivo de backup automático local (`backups_automaticos/`)
-    e força sincronização com a nuvem (Cofre 24/7 e/ou Google Drive) se conectada.
+    e força sincronização com a nuvem (Hub Desktop <-> Render, Cofre 24/7 e/ou Google Drive).
     Disponível em 1 clique no topo do painel para TODOS os perfis.
     """
     user_id = int(usuario.id)
     user_email = str(usuario.email or "")
-    local_res = mgr.create_local_auto_backup(reason=f"topbar_backup_{user_email}", force_history=True)
 
     cloud_synced = False
     cloud_error: str | None = None
     cloud_result: dict[str, Any] | None = None
+    hub_result: dict[str, Any] | None = None
+
+    # No modo Desktop, reenvia fila offline e aciona o Cofre 24/7 no Hub em Nuvem antes de gerar o ZIP local
+    if hub_client is not None and not mgr.is_cloud_container and hub_client.is_enabled():
+        local_u = hub_client.get_local_user_by_email(user_email)
+        if local_u:
+            hub_result = hub_client.sync_backup_now_for_user(local_u)
+            if hub_result.get("ok") and hub_result.get("cloud_synced"):
+                cloud_synced = True
+            elif hub_result.get("cloud_error") or hub_result.get("error"):
+                cloud_error = str(hub_result.get("cloud_error") or hub_result.get("error"))
+
+    local_res = mgr.create_local_auto_backup(reason=f"topbar_backup_{user_email}", force_history=True)
+
     if mgr.is_connected():
         try:
             cloud_result = mgr.sync_now(force=True, reason=f"topbar_backup_{user_email}")
-            cloud_synced = bool(cloud_result.get("ok"))
-            if not cloud_synced:
+            if cloud_result.get("ok"):
+                cloud_synced = True
+            else:
                 cloud_error = str(cloud_result.get("detail") or cloud_result.get("error") or "")
         except Exception as exc:
             cloud_error = str(exc)
 
     detached = models.Usuario(id=user_id, email=user_email)
-    status_now = _scoped_status_for_user(detached, mgr)
+    status_now = _scoped_status_for_user(detached, mgr, hub_client=hub_client)
     return {
         "ok": True,
         "local_backup": local_res,
         "cloud_synced": cloud_synced,
         "cloud_error": cloud_error,
         "cloud_result": cloud_result,
+        "hub_result": hub_result,
         "status": status_now,
         "counts": status_now.get("counts") or {},
         "mensagem": (
@@ -515,7 +560,13 @@ async def restaurar_backup_arquivo(
     raw_bytes = await file.read()
     _release_user_session(usuario)
     try:
-        result = mgr.import_user_backup_bytes(user_id, filename, raw_bytes)
+        result = await asyncio.to_thread(
+            mgr.import_user_backup_bytes,
+            user_id,
+            filename,
+            raw_bytes,
+            usuario_email=user_email,
+        )
         detached = models.Usuario(id=user_id, email=user_email)
         status_now = _scoped_status_for_user(detached, mgr)
         result["status"] = status_now

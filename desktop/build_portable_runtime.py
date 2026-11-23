@@ -209,10 +209,13 @@ def stage_clean_engine() -> None:
     if src_wa.is_dir():
         dst_wa = ENGINE_CLEAN_DIR / "whatsapp-service"
         dst_wa.mkdir(parents=True, exist_ok=True)
-        for fname in ("package.json", "package-lock.json", "sender.js"):
+        for fname in ("package.json", "package-lock.json"):
             fsrc = src_wa / fname
             if fsrc.is_file():
                 shutil.copy2(fsrc, dst_wa / fname)
+        for js_file in src_wa.glob("*.js"):
+            if js_file.is_file():
+                shutil.copy2(js_file, dst_wa / js_file.name)
         if (src_wa / "node_modules").is_dir():
             # Ignora cache local do puppeteer se existir para nao inflar o instalador
             shutil.copytree(

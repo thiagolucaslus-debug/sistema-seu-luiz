@@ -64,6 +64,28 @@ test('Configurações exibe Backup Automático Local, espelho Google Drive opcio
   assert.match(configSrc, /Restaurar Backup \(\.zip\/\.json\)/);
   assert.match(configSrc, /Espelhar automaticamente também no Google Drive/);
   assert.doesNotMatch(configSrc, /aprovações/i);
+  // Garante envio correto via FormData e leitura de data?.counts (nunca data?.restored)
+  assert.match(configSrc, /formData\.append\('file', file\)/);
+  assert.match(configSrc, /data\?\.counts/);
+  assert.doesNotMatch(configSrc, /data\?\.restored/);
+  // Garante link dedicado gdrive_folder_url e exibição de gdrive_last_error
+  assert.match(configSrc, /status\.gdrive_folder_url/);
+  assert.match(configSrc, /status\.gdrive_last_error/);
+  assert.match(configSrc, /ativarComCodigo\(event, true\)/);
+});
+
+test('Layout e client.js tratam warning, pending_changes, hub_outbox_count e erros 4xx corretamente', () => {
+  assert.match(layoutSrc, /saveState\.state === 'warning'/);
+  assert.match(layoutSrc, /hub_outbox_count/);
+  assert.match(layoutSrc, /hub_sync_enabled/);
+  assert.match(layoutSrc, /info\.cloud_error/);
+  assert.match(clientSrc, /input instanceof FormData/);
+  assert.match(clientSrc, /status >= 400 && status < 500/);
+});
+
+test('Lançamentos inclui busca por descrição e paginação Carregar mais', () => {
+  assert.match(lancamentosSrc, /Carregar mais lançamentos/);
+  assert.match(lancamentosSrc, /params\.busca/);
 });
 
 test('Login trata cloud_waking sem mostrar tela de cadastro inicial falsa', () => {

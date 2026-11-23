@@ -818,11 +818,12 @@ class HubSyncClient:
                     r_json = None
                 if isinstance(r_json, dict):
                     if loc_id is not None and ekind in id_remaps:
-                        rem_id = (
-                            r_json.get("parcela_id")
-                            if ekind == "divida_parcela"
-                            else r_json.get("id")
-                        )
+                        if ekind == "divida_parcela":
+                            rem_id = r_json.get("parcela_id")
+                        elif ekind == "lancamento" and r_json.get("lancamento_id") is not None:
+                            rem_id = r_json.get("lancamento_id")
+                        else:
+                            rem_id = r_json.get("id")
                         if rem_id is not None:
                             id_remaps[ekind][int(loc_id)] = int(rem_id)
                     if (
@@ -1048,14 +1049,15 @@ class HubSyncClient:
         if content_type:
             hdrs["Content-Type"] = content_type
 
+        req_timeout = 60.0 if path == "/cloud/restore-backup" else 20.0
         code, resp_hdrs, resp_body = self._request_hub(
-            method, pq, headers=hdrs, data=raw_body, timeout=20.0
+            method, pq, headers=hdrs, data=raw_body, timeout=req_timeout
         )
         if code == 401 and path != "/auth/senha":
             render_tok = self._ensure_hub_token(local_user, force_refresh=True)
             hdrs["Authorization"] = f"Bearer {render_tok}"
             code, resp_hdrs, resp_body = self._request_hub(
-                method, pq, headers=hdrs, data=raw_body, timeout=20.0
+                method, pq, headers=hdrs, data=raw_body, timeout=req_timeout
             )
 
         if 200 <= code < 300:
@@ -1080,6 +1082,83 @@ class HubSyncClient:
             self.pull_user_snapshot(render_tok)
 
         return code, resp_hdrs, resp_body
+
+    def get_user_hub_status(self, email: str) -> dict[str, Any]:
+        """Retorna resumo do espelhamento Desktop <-> Hub em Nuvem para o usuário."""
+        enabled = self.is_enabled()
+        norm_email = (email or "").strip().lower()
+        with self._lock:
+            outbox_count = sum(
+                1 for it in self._load_outbox() if it.get("usuario") == norm_email
+            )
+            online = time.monotonic() >= self._offline_until
+        return {
+            "hub_sync_enabled": enabled,
+            "hub_url": self.hub_url if enabled else "",
+            "hub_outbox_count": outbox_count,
+            "hub_online": online if enabled else False,
+        }
+
+    def sync_backup_now_for_user(self, local_user: dict[str, Any]) -> dict[str, Any]:
+        """
+        No modo Desktop, garante que o botão Backup:
+        1. Reenvie quaisquer alterações pendentes do offline_outbox.json para o Hub.
+        2. Acione POST /cloud/backup-agora no Hub (commit imediato no Cofre Criptografado 24/7).
+        3. Baixe o snapshot mais recente do Hub se houver revisão mais nova.
+        """
+        if not self.is_enabled():
+            return {"ok": False, "skipped": True, "reason": "hub_sync_disabled"}
+        try:
+            render_tok = self._ensure_hub_token(local_user)
+            replayed, render_tok = self._replay_outbox_for_user(local_user, render_tok)
+
+            code, _, body = self._request_hub(
+                "POST",
+                "/cloud/backup-agora",
+                headers={"Authorization": f"Bearer {render_tok}"},
+                timeout=45.0,
+            )
+            if code == 401:
+                render_tok = self._ensure_hub_token(local_user, force_refresh=True)
+                code, _, body = self._request_hub(
+                    "POST",
+                    "/cloud/backup-agora",
+                    headers={"Authorization": f"Bearer {render_tok}"},
+                    timeout=45.0,
+                )
+            if code != 200:
+                detail = f"Hub retornou HTTP {code}"
+                try:
+                    detail = json.loads(body.decode("utf-8")).get("detail") or detail
+                except Exception:
+                    pass
+                return {"ok": False, "cloud_synced": False, "error": detail}
+
+            hub_payload = json.loads(body.decode("utf-8"))
+            # Atualiza snapshot local se reenviamos outbox ou se o Hub está à frente
+            ver_code, _, ver_body = self._request_hub(
+                "GET",
+                "/sync/version",
+                headers={"Authorization": f"Bearer {render_tok}"},
+                timeout=6.0,
+            )
+            if replayed:
+                self.pull_user_snapshot(render_tok)
+            elif ver_code == 200:
+                rem_rev = int(json.loads(ver_body.decode("utf-8")).get("sync_rev") or 1)
+                loc_rev = int(local_user.get("sync_rev") or 1)
+                if rem_rev > loc_rev:
+                    self.pull_user_snapshot(render_tok)
+
+            return {
+                "ok": True,
+                "cloud_synced": bool(hub_payload.get("cloud_synced")),
+                "cloud_error": hub_payload.get("cloud_error"),
+                "hub_status": hub_payload.get("status") or {},
+                "replayed_outbox": replayed,
+            }
+        except Exception as exc:
+            return {"ok": False, "cloud_synced": False, "error": str(exc)}
 
 
 def _decode_bearer_local_user(hub_client: HubSyncClient, headers_list: list[tuple[bytes, bytes]]) -> dict[str, Any] | None:
@@ -1117,6 +1196,10 @@ def _infer_entity_kind(method: str, path: str) -> str | None:
         return "divida_parcela"
     if clean_path.startswith("/pessoas/") and clean_path.endswith("/pagamento"):
         return "pagamento_pessoa"
+    if clean_path.startswith("/contas/") and (
+        clean_path.endswith("/movimentar") or clean_path.endswith("/ajustar-saldo")
+    ):
+        return "lancamento"
     mapping = {
         "/contas/": "conta",
         "/contas": "conta",
@@ -1145,16 +1228,23 @@ class HubSyncASGIMiddleware:
 
     @staticmethod
     async def _send_raw_response(
-        send: Any, status_code: int, body: bytes, content_type: str = "application/json"
+        send: Any,
+        status_code: int,
+        body: bytes,
+        content_type: str = "application/json",
+        extra_headers: list[tuple[bytes, bytes]] | None = None,
     ) -> None:
+        hdrs: list[tuple[bytes, bytes]] = [
+            (b"content-type", content_type.encode("latin1")),
+            (b"content-length", str(len(body)).encode("ascii")),
+        ]
+        if extra_headers:
+            hdrs.extend(extra_headers)
         await send(
             {
                 "type": "http.response.start",
                 "status": status_code,
-                "headers": [
-                    (b"content-type", content_type.encode("latin1")),
-                    (b"content-length", str(len(body)).encode("ascii")),
-                ],
+                "headers": hdrs,
             }
         )
         await send({"type": "http.response.body", "body": body, "more_body": False})
@@ -1258,7 +1348,15 @@ class HubSyncASGIMiddleware:
                     or resp_hdrs.get("content-type")
                     or "application/json"
                 )
-                await self._send_raw_response(send, st_code, resp_bytes, content_type=resp_ct)
+                fwd_headers: list[tuple[bytes, bytes]] = []
+                for h_name in ("x-auto-saved", "x-cloud-sync-status", "x-cloud-sync-rev"):
+                    for rk, rv in resp_hdrs.items():
+                        if rk.lower() == h_name and rv:
+                            fwd_headers.append((h_name.encode("ascii"), str(rv).encode("latin1", errors="ignore")))
+                            break
+                await self._send_raw_response(
+                    send, st_code, resp_bytes, content_type=resp_ct, extra_headers=fwd_headers
+                )
                 return
             except HubUnreachableError:
                 # Executa no SQLite local e enfileira no outbox offline se bem-sucedido
@@ -1285,6 +1383,8 @@ class HubSyncASGIMiddleware:
                             if isinstance(out_json, dict):
                                 if ekind == "divida_parcela" and out_json.get("parcela_id") is not None:
                                     created_id = int(out_json["parcela_id"])
+                                elif ekind == "lancamento" and out_json.get("lancamento_id") is not None:
+                                    created_id = int(out_json["lancamento_id"])
                                 elif out_json.get("id") is not None:
                                     created_id = int(out_json["id"])
                                 if ekind == "divida" and isinstance(out_json.get("parcelas"), list):

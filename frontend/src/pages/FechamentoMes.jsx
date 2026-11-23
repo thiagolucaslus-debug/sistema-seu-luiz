@@ -298,7 +298,7 @@ export default function FechamentoMes() {
               value={ano}
               onChange={e => setAno(Number(e.target.value))}
             >
-              {[2024, 2025, 2026, 2027].map(a => (
+              {Array.from({ length: 6 }, (_, i) => hoje.getFullYear() - 2 + i).map(a => (
                 <option key={a} value={a} className="bg-slate-900 text-white">{a}</option>
               ))}
             </select>

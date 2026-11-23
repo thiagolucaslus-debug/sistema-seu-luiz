@@ -532,6 +532,9 @@ class CloudSyncManager:
                 "gdrive_account": str(self.credentials.get("account") or ""),
                 "folder_name": str(self.credentials.get("root_folder_name") or DEFAULT_FOLDER_NAME),
                 "folder_url": folder_url,
+                "gdrive_folder_url": str(self.meta.get("gdrive_folder_url") or (folder_url if gdrive_ok and not vault_ok else "")),
+                "gdrive_last_sync_at": self.meta.get("gdrive_last_sync_at"),
+                "gdrive_last_sync_iso": _iso_utc(self.meta.get("gdrive_last_sync_at")),
                 "auto_sync_enabled": auto_sync,
                 "syncing": self._syncing,
                 "restoring": self._restoring,
@@ -786,7 +789,21 @@ class CloudSyncManager:
             raise ValueError(f"Não foi possível validar o token no Google Drive: {exc}") from exc
 
         action_result: dict[str, Any] = {}
-        if restore_first:
+        if self.is_vault_connected():
+            # Cofre Criptografado 24/7 já é a fonte primária: ao vincular Google Drive,
+            # espelha imediatamente o banco atual no Drive sem sobrescrever o Cofre.
+            if sync_immediately:
+                try:
+                    action_result = self._gdrive_sync_now(
+                        force=True, reason="gdrive_mirror_connect", mirror_mode=True
+                    )
+                    with self._state_lock:
+                        self._gdrive_last_error = None
+                except Exception as gd_exc:
+                    with self._state_lock:
+                        self._gdrive_last_error = str(gd_exc)
+                    action_result = {"ok": False, "error": str(gd_exc)}
+        elif restore_first:
             action_result = self.restore_from_drive(force=True, on_boot=False)
             if sync_immediately and not action_result.get("remote_backup_found"):
                 action_result = self.sync_now(force=True, reason="token_import")
@@ -1143,6 +1160,10 @@ class CloudSyncManager:
         """
         if not self.is_connected():
             return {"ok": False, "skipped": True, "reason": "not_connected"}
+
+        if self.is_vault_connected():
+            # Quando o Cofre 24/7 já está ativo, o Google Drive atua como espelho secundário
+            return self._gdrive_sync_now(force=True, reason=reason, mirror_mode=True)
 
         folder_name = str(self.credentials.get("root_folder_name") or DEFAULT_FOLDER_NAME)
         root_folder = self._find_folder(folder_name)
@@ -1686,7 +1707,9 @@ class CloudSyncManager:
                 # Proteção Anti-Wipe e Anti-Sobrescrita de Revisão Mais Nova:
                 remote_users = int(((remote_manifest.get("counts") or {}).get("usuarios")) or 0)
                 local_users = int(snap_info["counts"].get("usuarios") or 0)
-                local_rev = int(self.meta.get("revision") or 0)
+                local_rev = int(
+                    self.meta.get("gdrive_revision" if mirror_mode else "revision") or 0
+                )
                 remote_rev = int(remote_manifest.get("revision") or 0)
                 remote_sha = str(remote_manifest.get("db_sha256") or "")
 
@@ -1696,10 +1719,20 @@ class CloudSyncManager:
                         "Use 'Restaurar do Drive' para recuperar os dados."
                     )
                     with self._state_lock:
-                        self._last_error = msg
+                        if mirror_mode:
+                            self._gdrive_last_error = msg
+                        else:
+                            self._last_error = msg
                     return {"ok": False, "blocked_anti_wipe": True, "detail": msg}
 
-                if not force and local_rev == 0 and remote_rev > 0 and remote_sha and remote_sha != snap_info["sha256"]:
+                if (
+                    not force
+                    and not mirror_mode
+                    and local_rev == 0
+                    and remote_rev > 0
+                    and remote_sha
+                    and remote_sha != snap_info["sha256"]
+                ):
                     msg = (
                         f"Proteção anti-perda ativada: o Google Drive já possui backup ativo (rev. #{remote_rev}). "
                         "Clique em 'Restaurar do Drive' para baixar os dados da nuvem ou 'Salvar no Drive agora' para substituir."
@@ -1710,6 +1743,7 @@ class CloudSyncManager:
 
                 if (
                     not force
+                    and not mirror_mode
                     and local_rev > 0
                     and remote_rev > local_rev
                     and self.meta.get("db_sha256")
@@ -1824,6 +1858,7 @@ class CloudSyncManager:
 
                 with self._state_lock:
                     if mirror_mode:
+                        self.meta["gdrive_revision"] = next_rev
                         self.meta["gdrive_db_sha256"] = snap_info["sha256"]
                         self.meta["gdrive_uploads"] = uploads_local
                         self.meta["gdrive_folder_id"] = root_id
@@ -1833,13 +1868,16 @@ class CloudSyncManager:
                     else:
                         self.meta.update(
                             revision=next_rev,
+                            gdrive_revision=next_rev,
                             db_sha256=snap_info["sha256"],
                             db_size=snap_info["size"],
                             counts=snap_info["counts"],
                             uploads=uploads_local,
                             folder_id=root_id,
                             folder_url=folder_url,
+                            gdrive_folder_url=folder_url,
                             last_sync_at=now_ts,
+                            gdrive_last_sync_at=now_ts,
                             gdrive_db_sha256=snap_info["sha256"],
                             gdrive_uploads=uploads_local,
                         )
@@ -2312,7 +2350,8 @@ class CloudSyncManager:
                     private=False,
                 )
 
-                last_hist = float(self.meta.get("last_local_history_at") or 0.0)
+                with self._state_lock:
+                    last_hist = float(self.meta.get("last_local_history_at") or 0.0)
                 if force_history or (now_ts - last_hist) >= 600:
                     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                     hist_file = self.auto_backup_dir / f"backup_auto_{stamp}.db"
@@ -2447,7 +2486,18 @@ class CloudSyncManager:
                     continue
 
                 try:
-                    self.sync_now(force=False, reason=reason)
+                    sync_res = self.sync_now(force=False, reason=reason)
+                    if isinstance(sync_res, dict) and not sync_res.get("ok"):
+                        if sync_res.get("skipped"):
+                            with self._state_lock:
+                                self._dirty = False
+                        else:
+                            # Bloqueios anti-wipe ou boot pendente: aplica backoff em vez de martelar a API a cada 1s
+                            with self._state_lock:
+                                backoff = self._retry_backoff_sec
+                                self._retry_backoff_sec = min(30.0, self._retry_backoff_sec * 2.0)
+                            self._wake_event.wait(timeout=backoff)
+                            self._wake_event.clear()
                 except Exception:
                     # Mantém _dirty=True e aguarda backoff progressivo para tentar novamente automaticamente
                     with self._state_lock:
@@ -2654,6 +2704,8 @@ class CloudSyncManager:
         usuario_id: int,
         filename: str,
         raw_bytes: bytes,
+        *,
+        usuario_email: str | None = None,
     ) -> dict[str, Any]:
         """
         Restaura um arquivo de backup (.zip ou .json) EXCLUSIVAMENTE para o perfil `usuario_id`,
@@ -2666,6 +2718,20 @@ class CloudSyncManager:
             raise ValueError("Arquivo de backup excede o limite de 50 MB.")
 
         uid = int(usuario_id)
+        target_email = (usuario_email or "").strip().lower()
+        if not target_email and self.db_path.is_file():
+            lookup_conn = sqlite3.connect(str(self.db_path), timeout=10.0)
+            try:
+                erow = lookup_conn.execute(
+                    "SELECT email FROM usuarios WHERE id = ? LIMIT 1", (uid,)
+                ).fetchone()
+                if erow and erow[0]:
+                    target_email = str(erow[0]).strip().lower()
+            except Exception:
+                pass
+            finally:
+                lookup_conn.close()
+
         low_name = (filename or "").strip().lower()
         is_zip = low_name.endswith(".zip") or raw_bytes[:2] == b"PK"
 
@@ -2692,16 +2758,30 @@ class CloudSyncManager:
                             src_conn.row_factory = sqlite3.Row
                             try:
                                 u_rows = src_conn.execute(
-                                    "SELECT id FROM usuarios ORDER BY id ASC"
+                                    "SELECT id, email FROM usuarios ORDER BY id ASC"
                                 ).fetchall()
                                 if not u_rows:
                                     raise ValueError("Backup SQLite não possui nenhum perfil.")
-                                # Se houver apenas 1 usuário no backup isolado, restaura ele; caso contrário tenta o mesmo ID
-                                src_uid = (
-                                    int(u_rows[0]["id"])
-                                    if len(u_rows) == 1
-                                    else (uid if any(int(r["id"]) == uid for r in u_rows) else int(u_rows[0]["id"]))
-                                )
+                                # Match seguro por login (`email`) primeiro para impedir mistura entre perfis
+                                # quando IDs numéricos diferem entre PC e nuvem.
+                                if len(u_rows) == 1:
+                                    src_uid = int(u_rows[0]["id"])
+                                else:
+                                    matched = next(
+                                        (
+                                            r
+                                            for r in u_rows
+                                            if target_email
+                                            and str(r["email"] or "").strip().lower() == target_email
+                                        ),
+                                        None,
+                                    )
+                                    if matched is None:
+                                        raise ValueError(
+                                            f"Este backup contém múltiplos perfis e não possui o perfil '{target_email or uid}'. "
+                                            "Use o backup isolado baixado pelo botão Backup do seu perfil."
+                                        )
+                                    src_uid = int(matched["id"])
                                 backup_data = self._extract_user_slice_from_sqlite(src_conn, src_uid)
                             finally:
                                 src_conn.close()
@@ -2955,6 +3035,33 @@ class CloudSyncManager:
                                 "UPDATE usuarios SET sync_rev = COALESCE(sync_rev, 1) + 1 WHERE id = ?",
                                 (uid,),
                             )
+                        # Restaura logo_path do perfil se o arquivo vier no backup ou já existir em uploads/
+                        u_info_bak_pre = backup_data.get("usuario")
+                        if (
+                            "usuarios" in tables
+                            and "logo_path" in _cols("usuarios")
+                            and isinstance(u_info_bak_pre, dict)
+                            and isinstance(u_info_bak_pre.get("logo_path"), str)
+                            and u_info_bak_pre["logo_path"].strip()
+                        ):
+                            raw_logo = u_info_bak_pre["logo_path"].strip().replace("\\", "/")
+                            logo_name = Path(raw_logo).name
+                            if logo_name and logo_name not in (".", "..") and (
+                                logo_name in extracted_uploads or (self.uploads_dir / logo_name).is_file()
+                            ):
+                                conn.execute(
+                                    "UPDATE usuarios SET logo_path = ? WHERE id = ?",
+                                    (f"/uploads/{logo_name}", uid),
+                                )
+                    try:
+                        conn.execute("PRAGMA wal_checkpoint(PASSIVE);")
+                        chk = conn.execute("PRAGMA integrity_check;").fetchone()
+                        if not chk or str(chk[0]).lower() != "ok":
+                            raise RuntimeError(f"Integridade SQLite inválida após restauração: {chk}")
+                    except RuntimeError:
+                        raise
+                    except Exception:
+                        pass
                 finally:
                     conn.close()
 

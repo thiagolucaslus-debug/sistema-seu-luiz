@@ -346,7 +346,7 @@ export default function Modulos() {
               value={ano}
               onChange={e => setAno(Number(e.target.value))}
             >
-              {[2024, 2025, 2026, 2027].map(a => <option key={a} value={a} className="bg-slate-900 text-white">{a}</option>)}
+              {Array.from({ length: 6 }, (_, i) => hoje.getFullYear() - 2 + i).map(a => <option key={a} value={a} className="bg-slate-900 text-white">{a}</option>)}
             </select>
           </div>
           <button onClick={() => setModalNovo(true)} className="btn-primary text-sm shadow-md shadow-blue-600/20">

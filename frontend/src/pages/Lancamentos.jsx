@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   lancamentos as lancamentosApi,
   cartoes as cartoesApi,
@@ -8,7 +8,7 @@ import {
 } from '../api/client';
 import {
   Plus, X, Trash2, Building2, CreditCard, ArrowDownRight,
-  ArrowUpRight, ArrowLeftRight, HandCoins, Calendar, CheckCircle2, ShoppingBag
+  ArrowUpRight, ArrowLeftRight, HandCoins, Calendar, CheckCircle2, ShoppingBag, Search
 } from 'lucide-react';
 import Avatar from '../components/Avatar';
 import CardArtwork from '../components/CardArtwork';
@@ -22,6 +22,8 @@ function fmt(val) {
 }
 
 const MESES_CURTOS = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+const ANO_ATUAL = new Date().getFullYear();
+const ANOS_OPCOES = Array.from({ length: 6 }, (_, i) => ANO_ATUAL - 2 + i);
 
 const TIPOS = [
   { value: 'compra_cartao', label: 'Compra no cartão', short: 'Cartão', tone: 'blue', icon: CreditCard },
@@ -77,9 +79,10 @@ function ModalNovoLancamento({ cartoes, contas, pessoas, modulos, onClose, onSav
         mes_fatura: form.tipo === 'compra_cartao' && form.mes_fatura_modo === 'manual' ? Number(form.mes_fatura) : null,
         ano_fatura: form.tipo === 'compra_cartao' && form.mes_fatura_modo === 'manual' ? Number(form.ano_fatura) : null,
         cartao_id: form.tipo === 'compra_cartao' && form.cartao_id ? parseInt(form.cartao_id, 10) : null,
-        conta_id: form.tipo !== 'compra_cartao' && form.conta_id ? parseInt(form.conta_id, 10) : null,
+        conta_id: ['despesa_conta', 'emprestimo_dado', 'receita', 'transferencia', 'reembolso_pessoa'].includes(form.tipo) && form.conta_id
+          ? parseInt(form.conta_id, 10) : null,
         conta_destino_id: form.tipo === 'transferencia' && form.conta_destino_id ? parseInt(form.conta_destino_id, 10) : null,
-        pessoa_id: ['compra_cartao', 'despesa_conta', 'emprestimo_dado'].includes(form.tipo) && form.pessoa_id
+        pessoa_id: ['compra_cartao', 'despesa_conta', 'emprestimo_dado', 'compra_para_mim', 'reembolso_pessoa'].includes(form.tipo) && form.pessoa_id
           ? parseInt(form.pessoa_id, 10) : null,
         modulo_id: form.modulo_id ? parseInt(form.modulo_id, 10) : null,
         observacoes: form.observacoes?.trim() || null,
@@ -133,7 +136,7 @@ function ModalNovoLancamento({ cartoes, contas, pessoas, modulos, onClose, onSav
               onChange={e => f('tipo', e.target.value)}
               required
             >
-              {TIPOS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+              {TODOS_TIPOS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
             </select>
           </div>
 
@@ -246,7 +249,7 @@ function ModalNovoLancamento({ cartoes, contas, pessoas, modulos, onClose, onSav
                   value={form.ano_fatura}
                   onChange={e => f('ano_fatura', Number(e.target.value))}
                 >
-                  {[2024, 2025, 2026, 2027, 2028].map(a => <option key={a} value={a}>{a}</option>)}
+                  {ANOS_OPCOES.map(a => <option key={a} value={a}>{a}</option>)}
                 </select>
               </div>
             </div>
@@ -288,19 +291,20 @@ function ModalNovoLancamento({ cartoes, contas, pessoas, modulos, onClose, onSav
             </div>
           )}
 
-          {/* Seletor de Conta (para despesa_conta, emprestimo_dado, receita, transferencia) */}
-          {['despesa_conta', 'emprestimo_dado', 'receita', 'transferencia'].includes(form.tipo) && (
+          {/* Seletor de Conta (para despesa_conta, emprestimo_dado, receita, transferencia, reembolso_pessoa) */}
+          {['despesa_conta', 'emprestimo_dado', 'receita', 'transferencia', 'reembolso_pessoa'].includes(form.tipo) && (
             <div>
               <label className="label">
                 {form.tipo === 'receita' ? 'Conta de Destino (onde entrou)' : 'Conta de Origem (de onde saiu)'}
+                {form.tipo === 'reembolso_pessoa' ? ' (opcional)' : ''}
               </label>
               <select
                 className="input"
                 value={form.conta_id}
                 onChange={e => f('conta_id', e.target.value)}
-                required
+                required={form.tipo !== 'reembolso_pessoa'}
               >
-                <option value="">Selecione a conta...</option>
+                <option value="">{form.tipo === 'reembolso_pessoa' ? 'Dinheiro em mãos / sem conta' : 'Selecione a conta...'}</option>
                 {contas.map(c => (
                   <option key={c.id} value={c.id}>{c.nome} ({c.banco})</option>
                 ))}
@@ -327,17 +331,23 @@ function ModalNovoLancamento({ cartoes, contas, pessoas, modulos, onClose, onSav
           )}
 
           {/* Quem usou / Pessoa responsável */}
-          {['compra_cartao', 'despesa_conta', 'emprestimo_dado'].includes(form.tipo) && (
+          {['compra_cartao', 'despesa_conta', 'emprestimo_dado', 'compra_para_mim', 'reembolso_pessoa'].includes(form.tipo) && (
             <div className="bg-[var(--raised)] p-4 rounded-2xl border border-[var(--line)]">
               <label className="label">
-                {form.tipo === 'emprestimo_dado' ? 'Quem pegou o dinheiro emprestado?' : 'Quem usou / Quem vai pagar esse gasto?'}
+                {form.tipo === 'emprestimo_dado'
+                  ? 'Quem pegou o dinheiro emprestado?'
+                  : form.tipo === 'compra_para_mim'
+                    ? 'Quem fez a compra para você (abatimento)?'
+                    : form.tipo === 'reembolso_pessoa'
+                      ? 'Para qual pessoa você pagou o reembolso?'
+                      : 'Quem usou / Quem vai pagar esse gasto?'}
               </label>
               <PersonPicker
                 people={pessoas}
                 selected={form.pessoa_id}
                 onChange={value => f('pessoa_id', value)}
                 ownProfile={usuario}
-                required={form.tipo === 'emprestimo_dado'}
+                required={['emprestimo_dado', 'compra_para_mim', 'reembolso_pessoa'].includes(form.tipo)}
               />
               <p className="text-xs text-[var(--muted)] mt-1.5">
                 Ao selecionar uma pessoa, o valor entra automaticamente no perfil e no fechamento mensal dela.
@@ -394,36 +404,33 @@ export default function Lancamentos() {
   const [pessoaFiltro, setPessoaFiltro] = useState('');
   const [cartaoFiltro, setCartaoFiltro] = useState('');
   const [contaFiltro, setContaFiltro] = useState('');
+  const [busca, setBusca] = useState('');
+  const [limit, setLimit] = useState(200);
   const [lista, setLista] = useState([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(false);
   const [savedNotice, setSavedNotice] = useState('');
+  const noticeTimerRef = useRef(null);
 
   const [cartoes, setCartoes] = useState([]);
   const [contas, setContas] = useState([]);
   const [pessoas, setPessoas] = useState([]);
   const [modulos, setModulos] = useState([]);
 
-  const carregar = async (overrides = null) => {
+  const carregar = async (limitOverride = null) => {
     setLoading(true);
     try {
-      const mVal = overrides?.mes !== undefined ? overrides.mes : mes;
-      const aVal = overrides?.ano !== undefined ? overrides.ano : ano;
-      const tVal = overrides?.tipoFiltro !== undefined ? overrides.tipoFiltro : tipoFiltro;
-      const pVal = overrides?.pessoaFiltro !== undefined ? overrides.pessoaFiltro : pessoaFiltro;
-      const cVal = overrides?.cartaoFiltro !== undefined ? overrides.cartaoFiltro : cartaoFiltro;
-      const ctVal = overrides?.contaFiltro !== undefined ? overrides.contaFiltro : contaFiltro;
-
-      const params = {};
-      if (mVal > 0) {
-        params.mes = mVal;
-        params.ano = aVal;
+      const params = { limit: limitOverride || limit };
+      if (mes > 0) {
+        params.mes = mes;
+        params.ano = ano;
       }
-      if (tVal) params.tipo = tVal;
-      if (pVal) params.pessoa_id = pVal;
-      if (cVal) params.cartao_id = cVal;
-      if (ctVal) params.conta_id = ctVal;
+      if (tipoFiltro) params.tipo = tipoFiltro;
+      if (pessoaFiltro) params.pessoa_id = pessoaFiltro;
+      if (cartaoFiltro) params.cartao_id = cartaoFiltro;
+      if (contaFiltro) params.conta_id = contaFiltro;
+      if (busca.trim()) params.busca = busca.trim();
 
       const [resL, resC, resCt, resP, resM] = await Promise.all([
         lancamentosApi.listar(params),
@@ -447,51 +454,62 @@ export default function Lancamentos() {
   };
 
   useEffect(() => {
-    carregar();
-  }, [mes, ano, tipoFiltro, pessoaFiltro, cartaoFiltro, contaFiltro]);
+    const timer = setTimeout(() => {
+      carregar();
+    }, busca ? 220 : 0);
+    return () => clearTimeout(timer);
+  }, [mes, ano, tipoFiltro, pessoaFiltro, cartaoFiltro, contaFiltro, busca, limit]);
+
+  useEffect(() => () => {
+    if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
+  }, []);
 
   const handleSavedLancamento = (created, payload) => {
     const dtStr = created?.data_lancamento || payload?.data_lancamento || '';
-    const overrides = {};
     let changedFilter = false;
 
     if (mes > 0 && /^\d{4}-\d{2}-\d{2}$/.test(dtStr)) {
       const [yStr, mStr] = dtStr.split('-');
       const createdAno = Number(yStr);
       const createdMes = Number(mStr);
-      if (createdAno !== ano || createdMes !== mes) {
+      const matchesPurchaseMonth = createdAno === ano && createdMes === mes;
+      const matchesInvoiceMonth = Number(created?.ano_fatura) === ano && Number(created?.mes_fatura) === mes;
+      if (!matchesPurchaseMonth && !matchesInvoiceMonth) {
         setMes(createdMes);
         setAno(createdAno);
-        overrides.mes = createdMes;
-        overrides.ano = createdAno;
         changedFilter = true;
       }
     }
 
     if (tipoFiltro && payload?.tipo && tipoFiltro !== payload.tipo) {
       setTipoFiltro('');
-      overrides.tipoFiltro = '';
       changedFilter = true;
     }
     if (pessoaFiltro && String(pessoaFiltro) !== String(payload?.pessoa_id || '')) {
       setPessoaFiltro('');
-      overrides.pessoaFiltro = '';
       changedFilter = true;
     }
     if (cartaoFiltro && String(cartaoFiltro) !== String(payload?.cartao_id || '')) {
       setCartaoFiltro('');
-      overrides.cartaoFiltro = '';
       changedFilter = true;
     }
-    if (contaFiltro && String(contaFiltro) !== String(payload?.conta_id || '')) {
+    if (
+      contaFiltro
+      && String(contaFiltro) !== String(payload?.conta_id || '')
+      && String(contaFiltro) !== String(payload?.conta_destino_id || '')
+    ) {
       setContaFiltro('');
-      overrides.contaFiltro = '';
+      changedFilter = true;
+    }
+    if (busca.trim()) {
+      setBusca('');
       changedFilter = true;
     }
 
     const fatInfo = created?.fatura_inicial ? ` • Fatura inicial: ${created.fatura_inicial}` : '';
+    if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
     setSavedNotice(`Lançamento "${created?.descricao || payload?.descricao}" salvo automaticamente!${fatInfo}`);
-    setTimeout(() => setSavedNotice(''), 7000);
+    noticeTimerRef.current = setTimeout(() => setSavedNotice(''), 7000);
 
     if (!changedFilter) {
       carregar();
@@ -583,7 +601,7 @@ export default function Lancamentos() {
             disabled={mes === 0}
             onChange={e => setAno(Number(e.target.value))}
           >
-            {[2024, 2025, 2026, 2027, 2028].map(a => <option key={a} value={a}>{a}</option>)}
+            {ANOS_OPCOES.map(a => <option key={a} value={a}>{a}</option>)}
           </select>
         </label>
 
@@ -626,6 +644,20 @@ export default function Lancamentos() {
           <option value="">Todas as contas</option>
           {contas.map(ct => <option key={ct.id} value={ct.id}>{ct.nome}</option>)}
         </select></label>
+
+        {/* Busca rápida por descrição */}
+        <label><span className="label">Buscar</span>
+          <div className="relative">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--muted)]" />
+            <input
+              type="text"
+              className="input pl-8"
+              placeholder="Descrição..."
+              value={busca}
+              onChange={e => setBusca(e.target.value)}
+            />
+          </div>
+        </label>
       </div>
 
       {/* Tabela de Lançamentos */}
@@ -756,6 +788,18 @@ export default function Lancamentos() {
               </tbody>
             </table>
           </div>
+          {lista.length < total && (
+            <div className="p-4 border-t border-[var(--line)] flex items-center justify-between gap-3 text-xs text-[var(--muted)]">
+              <span>Exibindo {lista.length} de {total} lançamentos</span>
+              <button
+                type="button"
+                onClick={() => setLimit(prev => Math.min(prev + 200, 1000))}
+                className="btn-secondary text-xs py-1.5 px-3"
+              >
+                Carregar mais lançamentos
+              </button>
+            </div>
+          )}
         </div>
       )}
 

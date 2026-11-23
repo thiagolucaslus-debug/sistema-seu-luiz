@@ -82,6 +82,7 @@ def listar_lancamentos(
     conta_id: Optional[int] = None,
     modulo_id: Optional[int] = None,
     tipo: Optional[str] = None,
+    busca: Optional[str] = None,
     limit: int = 200,
     offset: int = 0,
     db: Session = Depends(get_db),
@@ -107,6 +108,17 @@ def listar_lancamentos(
         query = query.filter(models.Lancamento.modulo_id == modulo_id)
     if tipo:
         query = query.filter(models.Lancamento.tipo == tipo)
+    if busca and busca.strip():
+        termo = f"%{busca.strip()}%"
+        query = query.filter(
+            or_(
+                models.Lancamento.descricao.ilike(termo),
+                models.Lancamento.observacoes.ilike(termo),
+            )
+        )
+
+    limit = max(1, min(int(limit or 200), 1000))
+    offset = max(0, int(offset or 0))
 
     if mes and ano:
         _, ultimo_dia = calendar.monthrange(ano, mes)
@@ -189,13 +201,37 @@ def listar_lancamentos(
 
     return {"total": total, "items": items}
 
+TIPOS_LANCAMENTO_VALIDOS = {t.value for t in models.TipoLancamento}
+
+
 @router.post("/")
 def criar_lancamento(data: LancamentoCreate, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
+    descricao_limpa = (data.descricao or "").strip()
+    if not descricao_limpa:
+        raise HTTPException(400, "Informe a descrição do lançamento.")
+
+    if data.tipo not in TIPOS_LANCAMENTO_VALIDOS:
+        raise HTTPException(400, "Tipo de lançamento inválido.")
+
     if data.valor_total is None or data.valor_total <= 0:
         raise HTTPException(400, "Informe um valor maior que zero.")
 
-    if data.tipo == "transferencia" and data.conta_id and data.conta_destino_id and data.conta_id == data.conta_destino_id:
-        raise HTTPException(400, "A conta de destino deve ser diferente da conta de origem.")
+    if data.total_parcelas is None or data.total_parcelas < 1 or data.total_parcelas > 120:
+        raise HTTPException(400, "O número de parcelas deve estar entre 1 e 120.")
+
+    if data.mes_fatura is not None and not (1 <= int(data.mes_fatura) <= 12):
+        raise HTTPException(400, "Mês da fatura inválido (use 1 a 12).")
+    if data.ano_fatura is not None and not (2000 <= int(data.ano_fatura) <= 2100):
+        raise HTTPException(400, "Ano da fatura inválido.")
+
+    if data.tipo == "compra_cartao" and not data.cartao_id:
+        raise HTTPException(400, "Selecione um cartão ativo para compras no cartão.")
+
+    if data.tipo == "transferencia":
+        if not data.conta_id or not data.conta_destino_id:
+            raise HTTPException(400, "Selecione as contas de origem e destino para a transferência.")
+        if data.conta_id == data.conta_destino_id:
+            raise HTTPException(400, "A conta de destino deve ser diferente da conta de origem.")
 
     cartao = None
     if data.cartao_id:
@@ -247,7 +283,7 @@ def criar_lancamento(data: LancamentoCreate, db: Session = Depends(get_db), usua
 
     lancamento = models.Lancamento(
         usuario_id=usuario.id,
-        descricao=data.descricao.strip(),
+        descricao=descricao_limpa,
         tipo=data.tipo,
         valor_total=round(data.valor_total, 2),
         total_parcelas=max(1, data.total_parcelas),

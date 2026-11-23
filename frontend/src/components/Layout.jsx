@@ -54,7 +54,12 @@ export default function Layout({ children }) {
     const fetchStatus = async () => {
       try {
         const { data } = await cloud.getStatus();
-        if (active) setCloudStatus(data);
+        if (active) {
+          setCloudStatus(data);
+          if (!data?.last_error && !data?.pending_changes && !(data?.hub_outbox_count > 0)) {
+            setSaveState(prev => (prev.state === 'error' ? { state: 'idle', at: Date.now(), message: '' } : prev));
+          }
+        }
       } catch {
         // Silencioso em caso de rede offline momentânea
       }
@@ -131,14 +136,23 @@ export default function Layout({ children }) {
 
       const c = info.counts || {};
       const resumo = `${c.lancamentos ?? 0} lançamentos, ${c.cartoes ?? 0} cartões, ${c.contas_bancarias ?? 0} contas, ${c.pessoas ?? 0} pessoas`;
-      setSaveState({ state: 'saved', at: Date.now(), syncStatus: info.cloud_synced ? 'synced' : 'local_only' });
-      showToast(
-        info.cloud_synced
-          ? `Backup salvo na nuvem e baixado (${filename}) — ${resumo}.`
-          : `Backup salvo no sistema e baixado (${filename}) — ${resumo}.`,
-        'success',
-        7000
-      );
+      if (info.cloud_error) {
+        setSaveState({ state: 'warning', at: Date.now(), syncStatus: 'error', message: info.cloud_error });
+        showToast(
+          `Backup salvo local e baixado (${filename}), mas a nuvem avisou: ${info.cloud_error}`,
+          'warning',
+          8000
+        );
+      } else {
+        setSaveState({ state: 'saved', at: Date.now(), syncStatus: info.cloud_synced ? 'synced' : 'local_only' });
+        showToast(
+          info.cloud_synced
+            ? `Backup salvo na nuvem e baixado (${filename}) — ${resumo}.`
+            : `Backup salvo no sistema e baixado (${filename}) — ${resumo}.`,
+          'success',
+          7000
+        );
+      }
     } catch (err) {
       const msg = err?.response?.data?.detail || err?.message || 'Erro ao gerar backup.';
       setSaveState({ state: 'error', at: Date.now(), message: msg });
@@ -175,15 +189,31 @@ export default function Layout({ children }) {
 
   // Cálculo do indicador visual de salvamento automático
   const renderSaveIndicator = (compact = false) => {
+    const outboxCount = Number(cloudStatus?.hub_outbox_count || 0);
     const isSaving = saveState.state === 'saving' || backingUp || restoringFile || Boolean(cloudStatus?.syncing);
-    const hasError = saveState.state === 'error' || Boolean(cloudStatus?.last_error);
-    const isCloudSynced = Boolean(cloudStatus?.connected && !cloudStatus?.pending_changes && !cloudStatus?.last_error);
+    const isPending = Boolean(cloudStatus?.connected && cloudStatus?.pending_changes) || outboxCount > 0;
+    const hasError =
+      saveState.state === 'error'
+      || saveState.state === 'warning'
+      || Boolean(cloudStatus?.last_error)
+      || Boolean(cloudStatus?.gdrive_last_error);
+    const isCloudSynced = Boolean(
+      (
+        (cloudStatus?.connected && !cloudStatus?.pending_changes)
+        || (cloudStatus?.hub_sync_enabled && cloudStatus?.hub_online && outboxCount === 0)
+      )
+      && !hasError
+    );
     const lastTs = cloudStatus?.last_sync_at || cloudStatus?.local_backup_at;
     const tooltip = hasError
-      ? `Aviso de salvamento: ${saveState.message || cloudStatus?.last_error || 'Verifique a conexão'}`
-      : isCloudSynced
-        ? `Salvamento automático ativo (Nuvem + Backup Local). Último backup: ${formatCloudTimestamp(lastTs)}${cloudStatus?.revision ? ` • rev. #${cloudStatus.revision}` : ''}`
-        : `Dados salvos automaticamente no banco e arquivo local. Último backup: ${formatCloudTimestamp(lastTs)}`;
+      ? `Aviso de salvamento: ${saveState.message || cloudStatus?.last_error || cloudStatus?.gdrive_last_error || 'Verifique a conexão'}`
+      : isPending
+        ? (outboxCount > 0
+          ? `${outboxCount} alteração(ões) salvas no PC aguardando conexão com a nuvem.`
+          : 'Alterações salvas localmente; sincronizando com a nuvem...')
+        : isCloudSynced
+          ? `Salvamento automático ativo (Nuvem + Backup Local). Último backup: ${formatCloudTimestamp(lastTs)}${cloudStatus?.revision ? ` • rev. #${cloudStatus.revision}` : ''}`
+          : `Dados salvos automaticamente no banco e arquivo local. Último backup: ${formatCloudTimestamp(lastTs)}`;
 
     if (isSaving) {
       return (
@@ -208,6 +238,20 @@ export default function Layout({ children }) {
         >
           <AlertTriangle size={13} className="shrink-0" />
           <span>{compact ? 'Atenção' : 'Salvo local • Verificar nuvem'}</span>
+        </Link>
+      );
+    }
+
+    if (isPending) {
+      return (
+        <Link
+          to="/configuracoes"
+          data-testid="save-status-indicator"
+          title={tooltip}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-blue-500/15 text-blue-500 border border-blue-500/30 whitespace-nowrap hover:bg-blue-500/25 transition-colors"
+        >
+          <Cloud size={13} className="shrink-0" />
+          <span>{compact ? 'Sincronizando' : (outboxCount > 0 ? `Salvo local • ${outboxCount} pendente(s)` : 'Sincronizando nuvem…')}</span>
         </Link>
       );
     }
@@ -453,11 +497,13 @@ export default function Layout({ children }) {
             className={`px-4 sm:px-8 py-2.5 text-xs font-semibold flex items-center justify-between gap-3 border-b print-hidden ${
               toast.tone === 'error'
                 ? 'bg-rose-500/15 text-rose-500 border-rose-500/30'
-                : 'bg-emerald-500/15 text-emerald-500 border-emerald-500/30'
+                : toast.tone === 'warning'
+                  ? 'bg-amber-500/15 text-amber-500 border-amber-500/30'
+                  : 'bg-emerald-500/15 text-emerald-500 border-emerald-500/30'
             }`}
           >
             <div className="flex items-center gap-2 min-w-0">
-              {toast.tone === 'error' ? <AlertTriangle size={15} className="shrink-0" /> : <CheckCircle2 size={15} className="shrink-0" />}
+              {(toast.tone === 'error' || toast.tone === 'warning') ? <AlertTriangle size={15} className="shrink-0" /> : <CheckCircle2 size={15} className="shrink-0" />}
               <span className="truncate">{toast.text}</span>
             </div>
             <button
