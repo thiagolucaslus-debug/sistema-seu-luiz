@@ -32,17 +32,56 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' }
 });
 
+function emitSaveState(detail) {
+  if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+    window.dispatchEvent(new CustomEvent('app:save-state', { detail }));
+  }
+}
+
+function isTrackedMutation(config) {
+  const method = String(config?.method || '').toLowerCase();
+  if (!['post', 'put', 'patch', 'delete'].includes(method)) return false;
+  const url = String(config?.url || '');
+  if (url.startsWith('/auth/login') || url.startsWith('/whatsapp/')) return false;
+  return true;
+}
+
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('token');
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
+  if (isTrackedMutation(config)) {
+    emitSaveState({ state: 'saving', url: config.url, at: Date.now() });
+  }
   return config;
 });
 
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    if (isTrackedMutation(response.config)) {
+      const hdrs = response.headers || {};
+      const syncStatus = hdrs['x-cloud-sync-status'] || '';
+      const rev = Number(hdrs['x-cloud-sync-rev'] || 0) || 0;
+      const autoSaved = hdrs['x-auto-saved'] || 'true';
+      emitSaveState({
+        state: syncStatus === 'error' ? 'warning' : 'saved',
+        syncStatus,
+        rev,
+        autoSaved,
+        at: Date.now(),
+      });
+    }
+    return response;
+  },
   (error) => {
+    if (isTrackedMutation(error.config)) {
+      emitSaveState({
+        state: 'error',
+        message: error.response?.data?.detail || error.message || 'Erro ao salvar',
+        at: Date.now(),
+      });
+    }
     const token = localStorage.getItem('token');
     const sentToken = error.config?.headers?.Authorization;
     if (error.response?.status === 401 && token && sentToken === `Bearer ${token}` &&
@@ -74,6 +113,8 @@ export const contas = {
   atualizar: (id, data) => api.put(`/contas/${id}`, data),
   deletar: (id) => api.delete(`/contas/${id}`),
   extrato: (id, mes, ano) => api.get(`/contas/${id}/extrato`, { params: { mes, ano } }),
+  movimentar: (id, data) => api.post(`/contas/${id}/movimentar`, data),
+  ajustarSaldo: (id, data) => api.post(`/contas/${id}/ajustar-saldo`, data),
 };
 
 export const cartoes = {
@@ -163,7 +204,7 @@ export const whatsapp = {
   disconnect: () => api.post('/whatsapp/disconnect'),
 };
 
-// Persistência automática na nuvem (Google Drive + Anti-Sono 24/7)
+// Persistência automática na nuvem (Google Drive + Anti-Sono 24/7 + Backup Local)
 export const cloud = {
   getStatus: () => api.get('/cloud/status'),
   authorize: () => api.post('/cloud/oauth/authorize'),
@@ -171,7 +212,11 @@ export const cloud = {
   importToken: (data) => api.post('/cloud/token', data),
   exportToken: () => api.get('/cloud/export-token'),
   syncNow: () => api.post('/cloud/sync'),
+  backupAgora: () => api.post('/cloud/backup-agora'),
   restoreNow: (data = { force: true }) => api.post('/cloud/restore', data),
+  restoreBackup: (formData) => api.post('/cloud/restore-backup', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  }),
   disconnect: () => api.delete('/cloud/disconnect'),
   downloadBackupZip: () => api.get('/cloud/backup-zip', { responseType: 'blob' }),
 };

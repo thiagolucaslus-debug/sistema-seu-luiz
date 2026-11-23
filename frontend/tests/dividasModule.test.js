@@ -46,10 +46,14 @@ test('formata contagem regressiva e estados do radar de vencimentos em portuguê
   assert.match(formatBRL(1500), /1\.500,00/);
 });
 
-test('registra o módulo Dívidas & Estratégia completo no menu, rota, Dashboard e API', () => {
-  assert.match(layout, /path:\s*'\/dividas'.*label:\s*'Dívidas & Estratégia'/);
-  assert.match(app, /path="\/dividas"/);
-  assert.match(dashboard, /Radar de Dívidas & Compromissos/);
+test('remove Dívidas & Estratégia e Aprovações do menu ativo, rotas e Dashboard mantendo helpers e API legada', () => {
+  assert.doesNotMatch(layout, /path:\s*'\/dividas'/);
+  assert.doesNotMatch(layout, /Dívidas & Estratégia/);
+  assert.doesNotMatch(layout, /path:\s*'\/aprovacoes'/);
+  assert.doesNotMatch(layout, /Aprovações/);
+  assert.doesNotMatch(app, /path="\/dividas"/);
+  assert.doesNotMatch(app, /path="\/aprovacoes"/);
+  assert.doesNotMatch(dashboard, /Radar de Dívidas & Compromissos/);
 
   for (const method of [
     'painel',

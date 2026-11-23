@@ -3,12 +3,13 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import re
 import sqlite3
 from datetime import datetime
 from html import escape
 from typing import Any, Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import object_session
@@ -445,12 +446,84 @@ def baixar_backup_zip(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Erro ao gerar pacote de backup: {exc}") from exc
     stamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
-    filename = f"backup_administracao_financeira_{stamp}.zip"
+    raw_slug = re.sub(r"[^a-z0-9_-]+", "_", str(usuario.email or "perfil").strip().lower()).strip("_") or "perfil"
+    filename = f"backup_{raw_slug}_{stamp}.zip"
     return Response(
         content=zip_bytes,
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.post("/backup-agora")
+def executar_backup_completo_agora(
+    usuario: models.Usuario = Depends(auth.get_usuario_atual),
+    mgr: CloudSyncManager = Depends(get_cloud_manager),
+):
+    """
+    Salva imediatamente o arquivo de backup automático local (`backups_automaticos/`)
+    e força sincronização com a nuvem (Cofre 24/7 e/ou Google Drive) se conectada.
+    Disponível em 1 clique no topo do painel para TODOS os perfis.
+    """
+    user_id = int(usuario.id)
+    user_email = str(usuario.email or "")
+    local_res = mgr.create_local_auto_backup(reason=f"topbar_backup_{user_email}", force_history=True)
+
+    cloud_synced = False
+    cloud_error: str | None = None
+    cloud_result: dict[str, Any] | None = None
+    if mgr.is_connected():
+        try:
+            cloud_result = mgr.sync_now(force=True, reason=f"topbar_backup_{user_email}")
+            cloud_synced = bool(cloud_result.get("ok"))
+            if not cloud_synced:
+                cloud_error = str(cloud_result.get("detail") or cloud_result.get("error") or "")
+        except Exception as exc:
+            cloud_error = str(exc)
+
+    detached = models.Usuario(id=user_id, email=user_email)
+    status_now = _scoped_status_for_user(detached, mgr)
+    return {
+        "ok": True,
+        "local_backup": local_res,
+        "cloud_synced": cloud_synced,
+        "cloud_error": cloud_error,
+        "cloud_result": cloud_result,
+        "status": status_now,
+        "counts": status_now.get("counts") or {},
+        "mensagem": (
+            "Backup salvo na nuvem e no arquivo local com sucesso!"
+            if cloud_synced
+            else "Backup salvo no arquivo local do sistema!"
+        ),
+    }
+
+
+@router.post("/restore-backup")
+async def restaurar_backup_arquivo(
+    file: UploadFile = File(...),
+    usuario: models.Usuario = Depends(auth.get_usuario_atual),
+    mgr: CloudSyncManager = Depends(get_cloud_manager),
+):
+    """
+    Restaura um arquivo de backup (.zip ou .json) baixado pelo botão Backup,
+    isoladamente para o perfil autenticado (sem afetar outros perfis).
+    """
+    user_id = int(usuario.id)
+    user_email = str(usuario.email or "")
+    filename = str(file.filename or "backup.zip")
+    raw_bytes = await file.read()
+    _release_user_session(usuario)
+    try:
+        result = mgr.import_user_backup_bytes(user_id, filename, raw_bytes)
+        detached = models.Usuario(id=user_id, email=user_email)
+        status_now = _scoped_status_for_user(detached, mgr)
+        result["status"] = status_now
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Falha ao restaurar arquivo de backup: {exc}") from exc
 
 
 @router.post("/vault/hydrate")

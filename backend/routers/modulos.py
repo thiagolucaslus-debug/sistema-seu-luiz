@@ -41,6 +41,7 @@ def listar_modulos(mes: Optional[int] = None, ano: Optional[int] = None, db: Ses
             models.Lancamento.modulo_id == m.id,
             models.Parcela.mes == (mes or hoje.month),
             models.Parcela.ano == (ano or hoje.year),
+            models.Parcela.status != "cancelado",
             models.Lancamento.cancelado == False
         ).all()
         total_mes = sum(p.valor for p in parcelas_mes)
@@ -130,6 +131,7 @@ def gastos_modulo(id: int, mes: Optional[int] = None, ano: Optional[int] = None,
         models.Lancamento.modulo_id == id,
         models.Parcela.mes == mes,
         models.Parcela.ano == ano,
+        models.Parcela.status != "cancelado",
         models.Lancamento.cancelado == False
     ).order_by(models.Lancamento.data_lancamento.desc()).all()
 

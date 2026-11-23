@@ -4,6 +4,7 @@ import { solicitacoes, mediaUrl } from '../api/client';
 import Avatar from '../components/Avatar';
 import CardArtwork from '../components/CardArtwork';
 import { getCardBrand } from '../components/cardBrand';
+import { todayLocalISO } from '../components/dateUtils';
 import {
   CreditCard, Upload, CheckCircle2, AlertCircle, ShoppingBag,
   HandCoins, Calendar, Camera, ArrowRight, ShieldCheck
@@ -21,7 +22,7 @@ export default function LancarCompra() {
   const [descricao, setDescricao] = useState('');
   const [valor, setValor] = useState('');
   const [parcelas, setParcelas] = useState(1);
-  const [dataCompra, setDataCompra] = useState(new Date().toISOString().split('T')[0]);
+  const [dataCompra, setDataCompra] = useState(todayLocalISO());
   const [observacoes, setObservacoes] = useState('');
   const [arquivo, setArquivo] = useState(null);
   const [previewFoto, setPreviewFoto] = useState(null);
@@ -133,7 +134,7 @@ export default function LancarCompra() {
           </div>
           <h2 className="text-2xl font-black text-white">Lançamento Enviado!</h2>
           <p className="text-sm text-slate-300">
-            Sua compra de <strong className="text-emerald-400">R$ {parseFloat(valor).toFixed(2).replace('.', ',')}</strong> foi enviada para <strong>{gestorNome}</strong> e já aparece na lista de aprovações no celular e no computador.
+            Sua compra de <strong className="text-emerald-400">R$ {parseFloat(valor).toFixed(2).replace('.', ',')}</strong> foi enviada para <strong>{gestorNome}</strong> com sucesso.
           </p>
           <button
             onClick={() => {
@@ -361,7 +362,7 @@ export default function LancarCompra() {
               <span>Enviando Lançamento...</span>
             ) : (
               <>
-                <span>Enviar para Aprovação</span>
+                <span>Enviar Lançamento</span>
                 <ArrowRight size={18} />
               </>
             )}

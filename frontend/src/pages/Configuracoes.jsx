@@ -20,6 +20,7 @@ import {
 import { auth, cloud, whatsapp } from '../api/client';
 import Avatar from '../components/Avatar';
 import { describeCloudState, formatCloudTimestamp, isLocalBrowserHost } from '../components/cloudFormat';
+import { todayLocalISO } from '../components/dateUtils';
 import { useAppearance } from '../contexts/AppearanceContext';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -344,18 +345,44 @@ function NuvemGoogleDrive() {
     setBusy(true);
     setMessage(null);
     try {
+      await cloud.backupAgora().catch(() => {});
       const response = await cloud.downloadBackupZip();
       const url = window.URL.createObjectURL(new Blob([response.data], { type: 'application/zip' }));
       const link = document.createElement('a');
       link.href = url;
-      link.download = `backup_administracao_financeira_${new Date().toISOString().slice(0, 10)}.zip`;
+      link.download = `backup_administracao_financeira_${todayLocalISO()}.zip`;
       document.body.appendChild(link);
       link.click();
       link.remove();
       window.URL.revokeObjectURL(url);
-      setMessage({ text: 'Pacote completo (.zip) baixado com sucesso.' });
+      await carregarStatus();
+      setMessage({ text: 'Backup automático atualizado e pacote completo (.zip) baixado com sucesso.' });
     } catch (error) {
       setMessage({ error: true, text: detail(error, 'Não foi possível gerar o arquivo .zip de backup.') });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function restaurarArquivoBackup(event) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    if (!window.confirm(`Deseja restaurar o backup "${file.name}" para o seu perfil atual? Uma cópia de segurança automática será salva antes da restauração.`)) {
+      return;
+    }
+    setBusy(true);
+    setMessage(null);
+    try {
+      const { data } = await cloud.restoreBackup(file);
+      await sincronizarPerfilRestaurado();
+      await carregarStatus();
+      const r = data?.restored || {};
+      setMessage({
+        text: `Backup restaurado com sucesso! (${r.lancamentos ?? 0} lançamentos, ${r.cartoes ?? 0} cartões, ${r.contas_bancarias ?? 0} contas, ${r.pessoas ?? 0} pessoas).`,
+      });
+    } catch (error) {
+      setMessage({ error: true, text: detail(error, 'Não foi possível restaurar o arquivo de backup.') });
     } finally {
       setBusy(false);
     }
@@ -389,18 +416,33 @@ function NuvemGoogleDrive() {
       <div className="flex flex-wrap gap-2 items-center">
         <span className={badge.badgeClass}>{badge.label}</span>
         <span className="badge-green">
-          <ShieldCheck size={13} className="mr-1" /> Anti-Sono 24/7 Ativo ({status.keep_alive_interval_minutes || 10} min)
+          <ShieldCheck size={13} className="mr-1" /> Anti-Sono 24/7 Ativo ({status.keep_alive_interval_minutes || 5} min)
         </span>
+        {status.gdrive_connected && status.vault_connected && (
+          <span className="badge-green">Google Drive Espelhado</span>
+        )}
+      </div>
+
+      {/* Backup automático local em disco */}
+      <div className="mt-3 rounded-xl border p-3 text-xs space-y-1" style={{ borderColor: 'var(--line)', background: 'var(--raised)' }}>
+        <p className="font-bold">💾 Backup Automático Local (todos os perfis)</p>
+        <p style={{ color: 'var(--muted)' }}>
+          Última cópia automática: <strong>{formatCloudTimestamp(status.local_backup_at)}</strong>
+          {status.local_backup_count ? ` • ${status.local_backup_count} arquivo(s) rotativos em backups_automaticos/` : ''}
+        </p>
       </div>
 
       {status.connected ? (
         <div className="mt-4 space-y-3">
           <div className="rounded-xl border p-3 text-sm space-y-1" style={{ borderColor: 'var(--line)', background: 'var(--raised)' }}>
             {status.account && <p><strong>{status.vault_connected ? 'Cofre em Nuvem:' : 'Conta Google:'}</strong> {status.account}</p>}
+            {status.gdrive_connected && status.vault_connected && (
+              <p><strong>Google Drive extra:</strong> Conectado ({status.folder_name || 'Administração Financeira - Backup Nuvem'})</p>
+            )}
             {!status.vault_connected && <p><strong>Pasta privada:</strong> {status.folder_name}</p>}
             <p><strong>Último salvamento:</strong> {formatCloudTimestamp(status.last_sync_at)} {status.revision ? `(rev. #${status.revision})` : ''}</p>
             <p><strong>Arquivos protegidos:</strong> Banco SQLite íntegro + {status.uploads_synced_count || 0} foto(s)/comprovante(s)</p>
-            {status.folder_url && !status.vault_connected && (
+            {status.folder_url && (status.gdrive_connected || !status.vault_connected) && (
               <p className="pt-1">
                 <a href={status.folder_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 font-semibold text-blue-600 hover:underline">
                   Abrir pasta no Google Drive <ExternalLink size={14} />
@@ -425,7 +467,7 @@ function NuvemGoogleDrive() {
                 <Cloud size={16} /> {status.vault_connected ? 'Restaurar da Nuvem' : 'Restaurar do Drive'}
               </button>
             )}
-            {!status.vault_connected && status.is_primary_owner !== false && (
+            {(!status.vault_connected || status.gdrive_connected) && status.is_primary_owner !== false && (
               <button type="button" className="btn-secondary" disabled={busy} onClick={copiarCodigoNuvem}>
                 <Copy size={16} /> Copiar Código Render
               </button>
@@ -433,12 +475,42 @@ function NuvemGoogleDrive() {
             <button type="button" className="btn-secondary" disabled={busy} onClick={baixarZip}>
               <Download size={16} /> Baixar Backup (.zip)
             </button>
-            {!status.vault_connected && status.is_primary_owner !== false && (
+            <label className="btn-secondary cursor-pointer">
+              <Upload size={16} /> Restaurar Backup (.zip/.json)
+              <input className="sr-only" type="file" accept=".zip,.json,application/zip,application/json" disabled={busy} onChange={restaurarArquivoBackup} />
+            </label>
+            {(!status.vault_connected || status.gdrive_connected) && status.is_primary_owner !== false && (
               <button type="button" className="btn-secondary text-red-600" disabled={busy} onClick={desconectarDrive}>
-                Desconectar
+                Desconectar Drive
               </button>
             )}
           </div>
+
+          {/* Permite conectar Google Drive como cópia extra mesmo quando o Cofre Nuvem 24/7 já está ativo */}
+          {status.vault_connected && !status.gdrive_connected && (
+            <details className="rounded-xl border p-3 text-xs space-y-2" style={{ borderColor: 'var(--line)', background: 'var(--raised)' }}>
+              <summary className="cursor-pointer font-bold">Espelhar automaticamente também no Google Drive (Opcional)</summary>
+              <p className="pt-2" style={{ color: 'var(--muted)' }}>
+                Além do Cofre Nuvem 24/7, você pode vincular sua conta Google Drive para salvar cópias automáticas extras em sua pasta privada.
+              </p>
+              {(isLocalHost || status.custom_client_configured) && (
+                <button type="button" className="btn-primary text-xs" disabled={busy} onClick={conectarUmClique}>
+                  <Cloud size={15} /> Conectar Google Drive em 1 Clique
+                </button>
+              )}
+              <form onSubmit={ativarComCodigo} className="space-y-2 pt-1">
+                <input
+                  className="input text-xs"
+                  placeholder="Cole aqui seu código GDRIVE1:... ou JSON"
+                  value={tokenInput}
+                  onChange={event => setTokenInput(event.target.value)}
+                />
+                <button className="btn-secondary text-xs" disabled={busy || !tokenInput.trim()}>
+                  Ativar Espelho Google Drive
+                </button>
+              </form>
+            </details>
+          )}
         </div>
       ) : (
         <div className="mt-4 space-y-4">
@@ -446,7 +518,7 @@ function NuvemGoogleDrive() {
             <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs space-y-1">
               <p className="font-bold text-emerald-400">✅ Sincronização Automática PC ↔ Celular já está ativa!</p>
               <p style={{ color: 'var(--ink)' }}>
-                Seu perfil, cartões, pessoas e aprovações sincronizam automaticamente com a nuvem 24/7 usando apenas seu <strong>usuário e senha</strong>. O Google Drive abaixo é apenas opcional para cópia extra.
+                Seu perfil, cartões, contas bancárias, pessoas e lançamentos sincronizam automaticamente com a nuvem 24/7 usando apenas seu <strong>usuário e senha</strong>. O Google Drive abaixo é opcional para cópia extra.
               </p>
             </div>
           )}
@@ -486,6 +558,10 @@ function NuvemGoogleDrive() {
               <button type="button" className="btn-secondary" disabled={busy} onClick={baixarZip}>
                 <Download size={16} /> Baixar Backup Local (.zip)
               </button>
+              <label className="btn-secondary cursor-pointer">
+                <Upload size={16} /> Restaurar Backup (.zip/.json)
+                <input className="sr-only" type="file" accept=".zip,.json,application/zip,application/json" disabled={busy} onChange={restaurarArquivoBackup} />
+              </label>
             </div>
           </form>
 

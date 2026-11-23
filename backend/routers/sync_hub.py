@@ -148,6 +148,26 @@ def emitir_sessao_sync(req: SyncSessionRequest, db: Session = Depends(get_db)):
         and req.senha_hash.startswith(("$2a$", "$2b$", "$2y$"))
         and 50 <= len(req.senha_hash) <= 120
     ):
+        # Proteção Anti-Wipe em container Render recém-iniciado e ainda não hidratado:
+        # jamais provisionar perfil vazio antes do cofre restaurar os dados reais.
+        try:
+            from routers.cloud import get_cloud_manager
+
+            mgr = get_cloud_manager()
+            if (
+                mgr.is_cloud_container
+                and not mgr.is_connected()
+                and db.query(models.Usuario).count() == 0
+            ):
+                raise HTTPException(
+                    status_code=503,
+                    detail="Servidor na nuvem iniciando e restaurando dados. Tente novamente em instantes.",
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+
         expected_new = compute_sync_proof(req.senha_hash, usuario_id, req.timestamp)
         if not hmac.compare_digest((req.proof or "").encode("ascii", errors="ignore"), expected_new.encode("ascii")):
             raise HTTPException(status_code=401, detail="Prova criptográfica inválida.")
@@ -178,10 +198,22 @@ def emitir_sessao_sync(req: SyncSessionRequest, db: Session = Depends(get_db)):
 
 @router.get("/version")
 def obter_versao_usuario(usuario: models.Usuario = Depends(auth.get_usuario_atual)):
+    cloud_ok = None
+    vault_ok = None
+    try:
+        from routers.cloud import get_cloud_manager
+
+        mgr = get_cloud_manager()
+        cloud_ok = mgr.is_connected()
+        vault_ok = mgr.is_vault_connected()
+    except Exception:
+        pass
     return {
         "usuario_id": usuario.id,
         "usuario": usuario.email,
         "sync_rev": int(usuario.sync_rev or 1),
+        "cloud_connected": cloud_ok,
+        "vault_connected": vault_ok,
     }
 
 

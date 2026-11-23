@@ -33,7 +33,7 @@ import models
 from routers.sync_hub import compute_sync_proof
 from services.cloud_sync import DEFAULT_RENDER_URL, _atomic_write_bytes, _atomic_write_json, _read_json_safe
 
-SYNCED_AUTH_MUTATIONS = {"/auth/senha", "/auth/perfil", "/auth/perfil/foto"}
+SYNCED_AUTH_MUTATIONS = {"/auth/senha", "/auth/perfil", "/auth/perfil/foto", "/cloud/restore-backup"}
 READONLY_POST_PATHS = {"/dividas/simular"}
 SYNCED_PREFIXES = (
     "/contas",
@@ -92,6 +92,7 @@ class HubSyncClient:
         enabled: bool | None = None,
         version_poll_interval_sec: float = 2.5,
         offline_cooldown_sec: float = 8.0,
+        on_local_change: Callable[[str], None] | None = None,
     ) -> None:
         self.data_dir = Path(data_dir).resolve()
         self.db_path = Path(db_path).resolve()
@@ -110,6 +111,7 @@ class HubSyncClient:
         self._explicit_enabled = enabled
         self.version_poll_interval_sec = float(version_poll_interval_sec)
         self.offline_cooldown_sec = float(offline_cooldown_sec)
+        self._on_local_change = on_local_change
 
         self._lock = threading.RLock()
         self._sessions: dict[str, str] = _read_json_safe(self.sessions_path).get("tokens") or {}
@@ -683,6 +685,11 @@ class HubSyncClient:
 
         with self._lock:
             self._last_poll_by_user[email] = time.monotonic()
+        if self._on_local_change is not None:
+            try:
+                self._on_local_change(f"hub_snapshot_{email}")
+            except Exception:
+                pass
         return local_user_dict
 
     def pull_user_snapshot(self, render_token: str) -> dict[str, Any]:
@@ -1010,11 +1017,13 @@ class HubSyncClient:
                     timeout=3.5,
                 )
             if code == 200:
-                remote_rev = int(json.loads(body.decode("utf-8")).get("sync_rev") or 1)
+                ver_payload = json.loads(body.decode("utf-8"))
+                remote_rev = int(ver_payload.get("sync_rev") or 1)
                 local_rev = int(local_user.get("sync_rev") or 1)
                 with self._lock:
                     self._last_poll_by_user[email] = time.monotonic()
-                if remote_rev != local_rev:
+                # Proteção anti-perda: só sobrescreve o banco local quando o Hub está estritamente mais novo
+                if remote_rev > local_rev:
                     self.pull_user_snapshot(render_tok)
         except Exception:
             # Modo offline transparente: leitura segue instantânea pelo SQLite local

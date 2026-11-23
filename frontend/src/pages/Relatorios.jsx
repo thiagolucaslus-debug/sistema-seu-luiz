@@ -42,7 +42,7 @@ export default function Relatorios() {
         <div>
           <h1 className="text-2xl sm:text-3xl font-extrabold text-gray-900 tracking-tight">Relatórios & Planejamento</h1>
           <p className="text-gray-500 text-sm mt-0.5">
-            Cronograma de parcelas futuras contratadas nos cartões
+            Cronograma de parcelas e despesas previstas nos cartões e contas
           </p>
         </div>
         <div className="print-hidden flex flex-wrap items-center gap-2">
@@ -118,7 +118,8 @@ export default function Relatorios() {
                           <div className="min-w-0">
                           <p className="font-medium text-gray-800 truncate">{it.descricao}</p>
                           <p className="text-[10px] text-gray-400">
-                            {it.cartao && `${it.cartao} • `}{it.pessoa} • {it.parcela}
+                            {it.cartao ? `${it.cartao} • ` : it.conta ? `${it.conta} • ` : ''}{it.pessoa} • {it.parcela}
+                            {it.data_lancamento ? ` • Compra ${it.data_lancamento.split('-').reverse().join('/')}` : ''}
                           </p>
                           </div>
                         </div>

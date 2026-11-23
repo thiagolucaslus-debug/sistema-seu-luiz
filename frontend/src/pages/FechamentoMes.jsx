@@ -4,6 +4,7 @@ import { useAuth } from '../contexts/AuthContext';
 import Avatar from '../components/Avatar';
 import CardArtwork from '../components/CardArtwork';
 import { getCardBrand } from '../components/cardBrand';
+import { todayLocalISO } from '../components/dateUtils';
 import {
   CalendarCheck, CreditCard, Building2, Users, Send, CheckCircle2,
   AlertCircle, ArrowUpRight, ArrowDownLeft, Download, RefreshCw, X
@@ -71,7 +72,7 @@ export default function FechamentoMes() {
     try {
       await pessoasApi.registrarPagamento(modalPagamento.id, {
         valor: parseFloat(pagamentoForm.valor),
-        data: new Date().toISOString().split('T')[0],
+        data: todayLocalISO(),
         forma: pagamentoForm.forma,
         observacao: pagamentoForm.observacao
       });

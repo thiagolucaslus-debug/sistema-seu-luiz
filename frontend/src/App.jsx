@@ -9,12 +9,10 @@ import Cartoes from './pages/Cartoes';
 import Contas from './pages/Contas';
 import Pessoas from './pages/Pessoas';
 import Modulos from './pages/Modulos';
-import Dividas from './pages/Dividas';
 import Relatorios from './pages/Relatorios';
 import Configuracoes from './pages/Configuracoes';
 import WhatsApp from './pages/WhatsApp';
 import FechamentoMes from './pages/FechamentoMes';
-import Aprovacoes from './pages/Aprovacoes';
 import LancarCompra from './pages/LancarCompra';
 
 const Dashboard = lazy(() => import('./pages/Dashboard'));
@@ -51,9 +49,7 @@ function AppRoutes() {
 
       {/* Rotas Protegidas do Sistema */}
       <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-      <Route path="/dividas" element={<ProtectedRoute><Dividas /></ProtectedRoute>} />
       <Route path="/fechamento" element={<ProtectedRoute><FechamentoMes /></ProtectedRoute>} />
-      <Route path="/aprovacoes" element={<ProtectedRoute><Aprovacoes /></ProtectedRoute>} />
       <Route path="/lancamentos" element={<ProtectedRoute><Lancamentos /></ProtectedRoute>} />
       <Route path="/cartoes" element={<ProtectedRoute><Cartoes /></ProtectedRoute>} />
       <Route path="/contas" element={<ProtectedRoute><Contas /></ProtectedRoute>} />

@@ -332,14 +332,16 @@ class CloudSyncManager:
         engine_disposer: Callable[[], None] | None = None,
         schema_migrator: Callable[[], None] | None = None,
         http_transport: Callable[..., tuple[int, dict[str, str], bytes]] | None = None,
-        debounce_seconds: float = 2.0,
-        max_wait_seconds: float = 10.0,
+        debounce_seconds: float = 0.5,
+        max_wait_seconds: float = 3.0,
         is_cloud_container: bool | None = None,
     ) -> None:
         self.data_dir = Path(data_dir).resolve()
         self.db_path = Path(db_path).resolve()
         self.uploads_dir = self.data_dir / "uploads"
         self.uploads_dir.mkdir(parents=True, exist_ok=True)
+        self.auto_backup_dir = self.data_dir / "backups_automaticos"
+        self.auto_backup_dir.mkdir(parents=True, exist_ok=True)
 
         self.config_dir = Path(config_dir).resolve() if config_dir else self.data_dir
         self.config_dir.mkdir(parents=True, exist_ok=True)
@@ -366,6 +368,7 @@ class CloudSyncManager:
 
         self._state_lock = threading.RLock()
         self._io_lock = threading.RLock()
+        self._local_bak_lock = threading.RLock()
 
         self._pending_oauth: dict[str, dict[str, Any]] = {}
         self.credentials: dict[str, Any] = {}
@@ -373,6 +376,8 @@ class CloudSyncManager:
         self.meta: dict[str, Any] = _read_json_safe(self.meta_path)
 
         self._dirty = False
+        self._write_gen = 0
+        self._retry_backoff_sec = 2.0
         self._first_dirty_at = 0.0
         self._last_dirty_at = 0.0
         self._syncing = False
@@ -380,6 +385,7 @@ class CloudSyncManager:
         self._boot_restore_failed = False
         self._shutdown = False
         self._last_error: str | None = None
+        self._gdrive_last_error: str | None = None
         self._last_reason: str = ""
         self._wake_event = threading.Event()
         self._worker_thread: threading.Thread | None = None
@@ -493,6 +499,7 @@ class CloudSyncManager:
             has_custom = bool(self.credentials.get("custom_client") and self.credentials.get("client_id"))
             last_sync_ts = self.meta.get("last_sync_at")
             last_restore_ts = self.meta.get("last_restore_at")
+            last_local_bak_ts = self.meta.get("last_local_backup_at")
             uploads_map = self.meta.get("uploads") or {}
             account_label = str(self.credentials.get("account") or "")
             folder_url = str(self.meta.get("folder_url") or "")
@@ -505,13 +512,24 @@ class CloudSyncManager:
                 account_label = f"Cofre Criptografado 24/7 ({self.vault_credentials.get('repo')})"
             if vault_ok and not folder_url:
                 folder_url = f"https://github.com/{self.vault_credentials.get('repo')}"
+            local_bak_files = 0
+            try:
+                if self.auto_backup_dir.is_dir():
+                    local_bak_files = sum(
+                        1 for p in self.auto_backup_dir.iterdir()
+                        if p.is_file() and p.suffix in (".db", ".json")
+                    )
+            except OSError:
+                local_bak_files = 0
             return {
                 "configured": True,
                 "custom_client_configured": has_custom,
                 "connected": connected,
                 "vault_connected": vault_ok,
+                "gdrive_connected": gdrive_ok,
                 "provider": "github_vault" if vault_ok else "google_drive",
                 "account": account_label,
+                "gdrive_account": str(self.credentials.get("account") or ""),
                 "folder_name": str(self.credentials.get("root_folder_name") or DEFAULT_FOLDER_NAME),
                 "folder_url": folder_url,
                 "auto_sync_enabled": auto_sync,
@@ -523,9 +541,13 @@ class CloudSyncManager:
                 "last_sync_iso": _iso_utc(last_sync_ts),
                 "last_restore_at": last_restore_ts,
                 "last_restore_iso": _iso_utc(last_restore_ts),
+                "local_backup_at": last_local_bak_ts,
+                "local_backup_iso": _iso_utc(last_local_bak_ts),
+                "local_backup_count": local_bak_files,
                 "last_error": self._last_error,
+                "gdrive_last_error": self._gdrive_last_error,
                 "uploads_synced_count": len(uploads_map),
-                "counts": self.meta.get("counts") or {},
+                "counts": self.meta.get("counts") or self.meta.get("local_backup_counts") or {},
                 "is_cloud_container": self.is_cloud_container,
                 "env_var_configured": bool(
                     (os.environ.get("GOOGLE_DRIVE_OAUTH_JSON") or "").strip()
@@ -542,10 +564,13 @@ class CloudSyncManager:
         return {
             "drive_conectado": st["connected"],
             "vault_conectado": st["vault_connected"],
+            "gdrive_conectado": st["gdrive_connected"],
             "provedor": st["provider"],
             "auto_sync": st["auto_sync_enabled"],
             "ultimo_backup": st["last_sync_iso"],
+            "ultimo_backup_local": st["local_backup_iso"],
             "revisao": st["revision"],
+            "pendente": st["pending_changes"],
             "container_nuvem": st["is_cloud_container"],
         }
 
@@ -1255,7 +1280,7 @@ class CloudSyncManager:
         with self._io_lock:
             with self._state_lock:
                 self._syncing = True
-                self._dirty = False
+                started_gen = self._write_gen
 
             tmp_dir = Path(tempfile.mkdtemp(prefix="seu_luiz_vsync_"))
             try:
@@ -1268,6 +1293,10 @@ class CloudSyncManager:
                     and self.meta.get("db_sha256") == snap_info["sha256"]
                     and self.meta.get("uploads") == uploads_local
                 ):
+                    with self._state_lock:
+                        if self._write_gen == started_gen:
+                            self._dirty = False
+                        self._retry_backoff_sec = 2.0
                     return {"ok": True, "action": "up_to_date", "revision": self.meta.get("revision", 0)}
 
                 vclient = self._build_vault_client()
@@ -1372,6 +1401,9 @@ class CloudSyncManager:
                         folder_url=vclient.repo_url,
                         last_sync_at=now_ts,
                     )
+                    if self._write_gen == started_gen:
+                        self._dirty = False
+                    self._retry_backoff_sec = 2.0
                     self._last_error = None
                     self._save_meta()
 
@@ -1388,6 +1420,7 @@ class CloudSyncManager:
             except Exception as exc:
                 with self._state_lock:
                     self._last_error = str(exc)
+                    self._dirty = True
                 raise
             finally:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -1574,14 +1607,34 @@ class CloudSyncManager:
 
     def sync_now(self, *, force: bool = False, reason: str = "manual") -> dict[str, Any]:
         if self.is_vault_connected():
-            return self._vault_sync_now(force=force, reason=reason)
-        if not self.is_connected():
+            res = self._vault_sync_now(force=force, reason=reason)
+            if self._is_gdrive_connected() and res.get("ok"):
+                try:
+                    gd_res = self._gdrive_sync_now(force=force, reason=reason, mirror_mode=True)
+                    res["gdrive_mirror"] = gd_res
+                    with self._state_lock:
+                        self._gdrive_last_error = None
+                except Exception as gd_exc:
+                    with self._state_lock:
+                        self._gdrive_last_error = str(gd_exc)
+                    res["gdrive_mirror"] = {"ok": False, "error": str(gd_exc)}
+            return res
+        return self._gdrive_sync_now(force=force, reason=reason, mirror_mode=False)
+
+    def _gdrive_sync_now(
+        self,
+        *,
+        force: bool = False,
+        reason: str = "manual",
+        mirror_mode: bool = False,
+    ) -> dict[str, Any]:
+        if not self._is_gdrive_connected():
             return {"ok": False, "skipped": True, "reason": "not_connected"}
         if not self.db_path.is_file():
             return {"ok": False, "skipped": True, "reason": "local_db_missing"}
 
         # Se a restauração inicial no boot falhou por rede transitória, restaura primeiro antes de permitir auto-sync
-        if not force and self._boot_restore_failed:
+        if not force and not mirror_mode and self._boot_restore_failed:
             retry_res = self.restore_from_drive(force=False, on_boot=True)
             if not retry_res.get("ok"):
                 return {
@@ -1595,7 +1648,7 @@ class CloudSyncManager:
         with self._io_lock:
             with self._state_lock:
                 self._syncing = True
-                self._dirty = False
+                started_gen = self._write_gen
 
             tmp_dir = Path(tempfile.mkdtemp(prefix="seu_luiz_sync_"))
             try:
@@ -1603,11 +1656,17 @@ class CloudSyncManager:
                 snap_info = create_sqlite_snapshot(self.db_path, snap_file)
                 uploads_local = self._scan_local_uploads()
 
+                prev_sha_key = "gdrive_db_sha256" if mirror_mode else "db_sha256"
+                prev_up_key = "gdrive_uploads" if mirror_mode else "uploads"
                 if (
                     not force
-                    and self.meta.get("db_sha256") == snap_info["sha256"]
-                    and self.meta.get("uploads") == uploads_local
+                    and self.meta.get(prev_sha_key) == snap_info["sha256"]
+                    and self.meta.get(prev_up_key) == uploads_local
                 ):
+                    with self._state_lock:
+                        if not mirror_mode and self._write_gen == started_gen:
+                            self._dirty = False
+                        self._retry_backoff_sec = 2.0
                     return {"ok": True, "action": "up_to_date", "revision": self.meta.get("revision", 0)}
 
                 folder_name = str(self.credentials.get("root_folder_name") or DEFAULT_FOLDER_NAME)
@@ -1764,17 +1823,30 @@ class CloudSyncManager:
                 )
 
                 with self._state_lock:
-                    self.meta.update(
-                        revision=next_rev,
-                        db_sha256=snap_info["sha256"],
-                        db_size=snap_info["size"],
-                        counts=snap_info["counts"],
-                        uploads=uploads_local,
-                        folder_id=root_id,
-                        folder_url=folder_url,
-                        last_sync_at=now_ts,
-                    )
-                    self._last_error = None
+                    if mirror_mode:
+                        self.meta["gdrive_db_sha256"] = snap_info["sha256"]
+                        self.meta["gdrive_uploads"] = uploads_local
+                        self.meta["gdrive_folder_id"] = root_id
+                        self.meta["gdrive_folder_url"] = folder_url
+                        self.meta["gdrive_last_sync_at"] = now_ts
+                        self._gdrive_last_error = None
+                    else:
+                        self.meta.update(
+                            revision=next_rev,
+                            db_sha256=snap_info["sha256"],
+                            db_size=snap_info["size"],
+                            counts=snap_info["counts"],
+                            uploads=uploads_local,
+                            folder_id=root_id,
+                            folder_url=folder_url,
+                            last_sync_at=now_ts,
+                            gdrive_db_sha256=snap_info["sha256"],
+                            gdrive_uploads=uploads_local,
+                        )
+                        if self._write_gen == started_gen:
+                            self._dirty = False
+                        self._retry_backoff_sec = 2.0
+                        self._last_error = None
                     self._save_meta()
 
                 return {
@@ -1788,7 +1860,11 @@ class CloudSyncManager:
                 }
             except Exception as exc:
                 with self._state_lock:
-                    self._last_error = str(exc)
+                    if mirror_mode:
+                        self._gdrive_last_error = str(exc)
+                    else:
+                        self._last_error = str(exc)
+                        self._dirty = True
                 raise
             finally:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -2020,13 +2096,266 @@ class CloudSyncManager:
                     self._restoring = False
 
     # =========================================================================
-    # Fila em Background com Debounce + Flush Limpo no Encerramento
+    # Backup Automático Local em Disco (backups_automaticos/)
+    # =========================================================================
+
+    @staticmethod
+    def _extract_user_slice_from_sqlite(conn: sqlite3.Connection, uid: int) -> dict[str, Any]:
+        conn.row_factory = sqlite3.Row
+        tables = {
+            r[0]
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
+
+        def _rows(sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+            return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+        def _has_col(tbl: str, col: str) -> bool:
+            if tbl not in tables:
+                return False
+            return col in {r[1] for r in conn.execute(f"PRAGMA table_info({tbl})").fetchall()}
+
+        u_row = conn.execute(
+            "SELECT id, nome, email, logo_path, sync_rev FROM usuarios WHERE id = ? LIMIT 1",
+            (uid,),
+        ).fetchone()
+        user_info = dict(u_row) if u_row else {"id": uid}
+
+        contas = (
+            _rows("SELECT * FROM contas_bancarias WHERE usuario_id = ? ORDER BY id ASC", (uid,))
+            if _has_col("contas_bancarias", "usuario_id")
+            else []
+        )
+        cartoes = (
+            _rows("SELECT * FROM cartoes WHERE usuario_id = ? ORDER BY id ASC", (uid,))
+            if _has_col("cartoes", "usuario_id")
+            else []
+        )
+        pessoas = (
+            _rows("SELECT * FROM pessoas WHERE usuario_id = ? ORDER BY id ASC", (uid,))
+            if _has_col("pessoas", "usuario_id")
+            else []
+        )
+        modulos = (
+            _rows("SELECT * FROM modulos WHERE usuario_id = ? ORDER BY id ASC", (uid,))
+            if _has_col("modulos", "usuario_id")
+            else []
+        )
+        mod_ids = [int(m["id"]) for m in modulos]
+        if mod_ids and "subcategorias" in tables:
+            ph = ",".join("?" for _ in mod_ids)
+            subcategorias = _rows(
+                f"SELECT * FROM subcategorias WHERE modulo_id IN ({ph}) ORDER BY id ASC",
+                tuple(mod_ids),
+            )
+        else:
+            subcategorias = []
+
+        lancamentos = (
+            _rows("SELECT * FROM lancamentos WHERE usuario_id = ? ORDER BY id ASC", (uid,))
+            if _has_col("lancamentos", "usuario_id")
+            else []
+        )
+        lanc_ids = [int(l["id"]) for l in lancamentos]
+        if lanc_ids and "parcelas" in tables:
+            ph = ",".join("?" for _ in lanc_ids)
+            parcelas = _rows(
+                f"SELECT * FROM parcelas WHERE lancamento_id IN ({ph}) ORDER BY id ASC",
+                tuple(lanc_ids),
+            )
+        else:
+            parcelas = []
+
+        pagamentos_pessoa = (
+            _rows("SELECT * FROM pagamentos_pessoa WHERE usuario_id = ? ORDER BY id ASC", (uid,))
+            if _has_col("pagamentos_pessoa", "usuario_id")
+            else []
+        )
+        pagamentos_fatura = (
+            _rows("SELECT * FROM pagamentos_fatura WHERE usuario_id = ? ORDER BY id ASC", (uid,))
+            if _has_col("pagamentos_fatura", "usuario_id")
+            else []
+        )
+        solicitacoes = (
+            _rows("SELECT * FROM solicitacoes_lancamento WHERE usuario_id = ? ORDER BY id ASC", (uid,))
+            if _has_col("solicitacoes_lancamento", "usuario_id")
+            else []
+        )
+        dividas = (
+            _rows("SELECT * FROM dividas WHERE usuario_id = ? ORDER BY id ASC", (uid,))
+            if _has_col("dividas", "usuario_id")
+            else []
+        )
+        div_ids = [int(d["id"]) for d in dividas]
+        if div_ids and "divida_parcelas" in tables:
+            ph = ",".join("?" for _ in div_ids)
+            divida_parcelas = _rows(
+                f"SELECT * FROM divida_parcelas WHERE divida_id IN ({ph}) ORDER BY id ASC",
+                tuple(div_ids),
+            )
+        else:
+            divida_parcelas = []
+
+        counts = {
+            "usuarios": 1,
+            "contas_bancarias": len(contas),
+            "cartoes": len(cartoes),
+            "pessoas": len(pessoas),
+            "modulos": len(modulos),
+            "subcategorias": len(subcategorias),
+            "lancamentos": len(lancamentos),
+            "parcelas": len(parcelas),
+            "pagamentos_pessoa": len(pagamentos_pessoa),
+            "pagamentos_fatura": len(pagamentos_fatura),
+            "solicitacoes_lancamento": len(solicitacoes),
+            "dividas": len(dividas),
+            "divida_parcelas": len(divida_parcelas),
+        }
+
+        return {
+            "schema_version": 2,
+            "sistema": "Administração Financeira",
+            "exported_at_iso": _iso_utc(time.time()),
+            "usuario": user_info,
+            "counts": counts,
+            "contas_bancarias": contas,
+            "cartoes": cartoes,
+            "pessoas": pessoas,
+            "modulos": modulos,
+            "subcategorias": subcategorias,
+            "lancamentos": lancamentos,
+            "parcelas": parcelas,
+            "pagamentos_pessoa": pagamentos_pessoa,
+            "pagamentos_fatura": pagamentos_fatura,
+            "solicitacoes_lancamento": solicitacoes,
+            "dividas": dividas,
+            "divida_parcelas": divida_parcelas,
+        }
+
+    def create_local_auto_backup(
+        self,
+        *,
+        reason: str = "auto",
+        force_history: bool = False,
+    ) -> dict[str, Any]:
+        """
+        Grava backup automático local em `DATA_DIR/backups_automaticos/`:
+        - `ultimo_backup_automatico.db`: cópia SQLite íntegra via backup API (seguro com WAL).
+        - `ultimo_backup_automatico.json`: resumo + estatísticas atualizadas.
+        - `perfis/<usuario>_backup.json`: cópia JSON isolada de CADA perfil existente no sistema.
+        - Rotação histórica de até 10 snapshots `.db` (a cada 10 min ou quando forçado).
+        """
+        if not self.db_path.is_file():
+            return {"ok": False, "skipped": True, "reason": "local_db_missing"}
+
+        with self._local_bak_lock:
+            self.auto_backup_dir.mkdir(parents=True, exist_ok=True)
+            perfis_dir = self.auto_backup_dir / "perfis"
+            perfis_dir.mkdir(parents=True, exist_ok=True)
+
+            tmp_dir = Path(tempfile.mkdtemp(prefix="seu_luiz_autobak_"))
+            try:
+                tmp_db = tmp_dir / "ultimo_backup_automatico.db"
+                snap_info = create_sqlite_snapshot(self.db_path, tmp_db)
+
+                target_latest_db = self.auto_backup_dir / "ultimo_backup_automatico.db"
+                _atomic_write_bytes(target_latest_db, tmp_db.read_bytes(), private=False)
+
+                now_ts = time.time()
+                profiles_summary: list[dict[str, Any]] = []
+                conn = sqlite3.connect(str(tmp_db), timeout=20.0)
+                conn.row_factory = sqlite3.Row
+                try:
+                    tables = {
+                        r[0]
+                        for r in conn.execute(
+                            "SELECT name FROM sqlite_master WHERE type='table'"
+                        ).fetchall()
+                    }
+                    if "usuarios" in tables:
+                        for u_row in conn.execute(
+                            "SELECT id, nome, email FROM usuarios ORDER BY id ASC"
+                        ).fetchall():
+                            uid = int(u_row["id"])
+                            u_slice = self._extract_user_slice_from_sqlite(conn, uid)
+                            raw_email = str(u_row["email"] or f"perfil_{uid}").strip().lower()
+                            safe_slug = re.sub(r"[^a-z0-9_.-]+", "_", raw_email).strip("_") or f"perfil_{uid}"
+                            _atomic_write_json(
+                                perfis_dir / f"{safe_slug}_backup.json",
+                                u_slice,
+                                private=True,
+                            )
+                            profiles_summary.append(
+                                {
+                                    "id": uid,
+                                    "nome": u_row["nome"],
+                                    "usuario": raw_email,
+                                    "counts": u_slice["counts"],
+                                }
+                            )
+                finally:
+                    conn.close()
+
+                summary_payload = {
+                    "sistema": "Administração Financeira",
+                    "updated_at": now_ts,
+                    "updated_at_iso": _iso_utc(now_ts),
+                    "reason": reason,
+                    "db_sha256": snap_info["sha256"],
+                    "db_size": snap_info["size"],
+                    "counts": snap_info["counts"],
+                    "perfis": profiles_summary,
+                }
+                _atomic_write_json(
+                    self.auto_backup_dir / "ultimo_backup_automatico.json",
+                    summary_payload,
+                    private=False,
+                )
+
+                last_hist = float(self.meta.get("last_local_history_at") or 0.0)
+                if force_history or (now_ts - last_hist) >= 600:
+                    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    hist_file = self.auto_backup_dir / f"backup_auto_{stamp}.db"
+                    _atomic_write_bytes(hist_file, tmp_db.read_bytes(), private=False)
+                    # Mantém apenas os 10 snapshots históricos mais recentes
+                    hist_list = sorted(
+                        self.auto_backup_dir.glob("backup_auto_*.db"),
+                        key=lambda p: p.stat().st_mtime,
+                        reverse=True,
+                    )
+                    for old_snap in hist_list[10:]:
+                        try:
+                            old_snap.unlink()
+                        except OSError:
+                            pass
+                    with self._state_lock:
+                        self.meta["last_local_history_at"] = now_ts
+
+                with self._state_lock:
+                    self.meta["last_local_backup_at"] = now_ts
+                    self.meta["local_backup_counts"] = snap_info["counts"]
+                    self._save_meta()
+
+                return {
+                    "ok": True,
+                    "path": str(target_latest_db),
+                    "updated_at_iso": _iso_utc(now_ts),
+                    "db_sha256": snap_info["sha256"],
+                    "counts": snap_info["counts"],
+                    "perfis_count": len(profiles_summary),
+                }
+            finally:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    # =========================================================================
+    # Fila em Background com Debounce + Retry Garantido + Flush no Encerramento
     # =========================================================================
 
     def notify_change(self, reason: str = "write") -> None:
         with self._state_lock:
             if self._shutdown or self._restoring:
                 return
+            self._write_gen += 1
             auto_ok = (
                 bool(self.vault_credentials.get("auto_sync_enabled", True))
                 if self.is_vault_connected()
@@ -2048,6 +2377,46 @@ class CloudSyncManager:
                     daemon=True,
                 )
                 self._worker_thread.start()
+
+    def flush_after_mutation(
+        self,
+        reason: str = "mutation",
+        *,
+        sync_cloud_blocking: bool = False,
+    ) -> dict[str, Any]:
+        """
+        Garante persistência imediata após cada alteração de qualquer perfil:
+        1. Atualiza imediatamente o arquivo de backup automático local (`backups_automaticos/`).
+        2. Em modo nuvem/web conectado, envia imediatamente ao Cofre Criptografado / Drive
+           (sem depender do debounce de background antes de responder ao navegador).
+        3. Em caso de falha transitória de rede, mantém `_dirty = True` para retry automático.
+        """
+        local_res: dict[str, Any] = {"ok": False}
+        try:
+            local_res = self.create_local_auto_backup(reason=reason)
+        except Exception as exc:
+            local_res = {"ok": False, "error": str(exc)}
+
+        cloud_res: dict[str, Any] = {"ok": False, "skipped": True}
+        with self._state_lock:
+            can_auto_cloud = self.is_connected() and (
+                bool(self.vault_credentials.get("auto_sync_enabled", True))
+                if self.is_vault_connected()
+                else bool(self.credentials.get("auto_sync_enabled", True))
+            )
+
+        if can_auto_cloud:
+            if sync_cloud_blocking:
+                try:
+                    cloud_res = self.sync_now(force=False, reason=reason)
+                except Exception as exc:
+                    cloud_res = {"ok": False, "error": str(exc)}
+                    self.notify_change(reason)
+            else:
+                self.notify_change(reason)
+                cloud_res = {"ok": True, "queued": True}
+
+        return {"local": local_res, "cloud": cloud_res}
 
     def _background_loop(self) -> None:
         while not self._shutdown:
@@ -2080,11 +2449,19 @@ class CloudSyncManager:
                 try:
                     self.sync_now(force=False, reason=reason)
                 except Exception:
-                    # Erro já registrado em self._last_error; evita loop apertado
-                    time.sleep(2.0)
+                    # Mantém _dirty=True e aguarda backoff progressivo para tentar novamente automaticamente
+                    with self._state_lock:
+                        backoff = self._retry_backoff_sec
+                        self._retry_backoff_sec = min(30.0, self._retry_backoff_sec * 2.0)
+                    self._wake_event.wait(timeout=backoff)
+                    self._wake_event.clear()
                 break
 
     def flush_pending(self) -> dict[str, Any] | None:
+        try:
+            self.create_local_auto_backup(reason="shutdown_flush")
+        except Exception:
+            pass
         with self._state_lock:
             has_dirty = self._dirty
             reason = self._last_reason or "shutdown_flush"
@@ -2113,8 +2490,21 @@ class CloudSyncManager:
             worker.join(timeout=5.0)
 
     # =========================================================================
-    # Exportação de Pacote ZIP Completo ou Isolado por Usuário (1 Clique)
+    # Exportação & Restauração de Backup Completo por Usuário (ZIP + JSON)
     # =========================================================================
+
+    def export_user_json_dict(self, usuario_id: int) -> dict[str, Any]:
+        tmp_dir = Path(tempfile.mkdtemp(prefix="seu_luiz_ujson_"))
+        try:
+            snap_file = tmp_dir / "financeiro.db"
+            create_sqlite_snapshot(self.db_path, snap_file)
+            conn = sqlite3.connect(str(snap_file), timeout=30.0)
+            try:
+                return self._extract_user_slice_from_sqlite(conn, int(usuario_id))
+            finally:
+                conn.close()
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     def export_backup_zip_bytes(
         self,
@@ -2128,11 +2518,13 @@ class CloudSyncManager:
             snap_info = create_sqlite_snapshot(self.db_path, snap_file)
             allowed_uploads: set[str] | None = None
             excluded_uploads: set[str] = set()
+            user_json_export: dict[str, Any] | None = None
 
             if usuario_id is not None:
                 uid = int(usuario_id)
                 conn = sqlite3.connect(str(snap_file), timeout=30.0)
                 try:
+                    user_json_export = self._extract_user_slice_from_sqlite(conn, uid)
                     existing_tables = {
                         r[0]
                         for r in conn.execute(
@@ -2241,6 +2633,11 @@ class CloudSyncManager:
                     "escopo": "perfil_isolado" if usuario_id is not None else "instancia_completa",
                 }
                 zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+                if user_json_export is not None:
+                    zf.writestr(
+                        "backup_dados.json",
+                        json.dumps(user_json_export, ensure_ascii=False, indent=2),
+                    )
                 if self.uploads_dir.is_dir():
                     for up in sorted(self.uploads_dir.iterdir()):
                         if up.is_file() and not up.name.startswith("."):
@@ -2249,5 +2646,401 @@ class CloudSyncManager:
                             if allowed_uploads is None or up.name in allowed_uploads:
                                 zf.write(up, arcname=f"uploads/{up.name}")
             return buf.getvalue()
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def import_user_backup_bytes(
+        self,
+        usuario_id: int,
+        filename: str,
+        raw_bytes: bytes,
+    ) -> dict[str, Any]:
+        """
+        Restaura um arquivo de backup (.zip ou .json) EXCLUSIVAMENTE para o perfil `usuario_id`,
+        sem afetar outros perfis, com remapeamento seguro de PK/FK, snapshot de segurança prévio
+        e sincronização automática após a restauração.
+        """
+        if not raw_bytes:
+            raise ValueError("O arquivo de backup está vazio.")
+        if len(raw_bytes) > 50 * 1024 * 1024:
+            raise ValueError("Arquivo de backup excede o limite de 50 MB.")
+
+        uid = int(usuario_id)
+        low_name = (filename or "").strip().lower()
+        is_zip = low_name.endswith(".zip") or raw_bytes[:2] == b"PK"
+
+        tmp_dir = Path(tempfile.mkdtemp(prefix="seu_luiz_import_"))
+        extracted_uploads: dict[str, bytes] = {}
+        try:
+            backup_data: dict[str, Any] | None = None
+
+            if is_zip:
+                try:
+                    with zipfile.ZipFile(io.BytesIO(raw_bytes), "r") as zf:
+                        names = zf.namelist()
+                        if "backup_dados.json" in names:
+                            raw_json = zf.read("backup_dados.json").decode("utf-8")
+                            parsed = json.loads(raw_json)
+                            if not isinstance(parsed, dict):
+                                raise ValueError("Conteúdo de backup_dados.json inválido.")
+                            backup_data = parsed
+                        elif "financeiro.db" in names:
+                            tmp_db = tmp_dir / "imported.db"
+                            tmp_db.write_bytes(zf.read("financeiro.db"))
+                            validate_sqlite_file(tmp_db)
+                            src_conn = sqlite3.connect(str(tmp_db), timeout=20.0)
+                            src_conn.row_factory = sqlite3.Row
+                            try:
+                                u_rows = src_conn.execute(
+                                    "SELECT id FROM usuarios ORDER BY id ASC"
+                                ).fetchall()
+                                if not u_rows:
+                                    raise ValueError("Backup SQLite não possui nenhum perfil.")
+                                # Se houver apenas 1 usuário no backup isolado, restaura ele; caso contrário tenta o mesmo ID
+                                src_uid = (
+                                    int(u_rows[0]["id"])
+                                    if len(u_rows) == 1
+                                    else (uid if any(int(r["id"]) == uid for r in u_rows) else int(u_rows[0]["id"]))
+                                )
+                                backup_data = self._extract_user_slice_from_sqlite(src_conn, src_uid)
+                            finally:
+                                src_conn.close()
+                        else:
+                            raise ValueError(
+                                "Arquivo .zip inválido: não contém backup_dados.json nem financeiro.db."
+                            )
+
+                        for member in names:
+                            norm = member.replace("\\", "/")
+                            if not norm.startswith("uploads/") or norm.endswith("/"):
+                                continue
+                            rel = norm[len("uploads/"):]
+                            safe_name = Path(rel).name
+                            if not safe_name or safe_name != rel or safe_name in (".", "..") or ".." in norm:
+                                continue
+                            info = zf.getinfo(member)
+                            if info.file_size <= 10 * 1024 * 1024:
+                                extracted_uploads[safe_name] = zf.read(member)
+                except zipfile.BadZipFile as exc:
+                    raise ValueError("Arquivo .zip corrompido ou inválido.") from exc
+            else:
+                try:
+                    parsed = json.loads(raw_bytes.decode("utf-8"))
+                except Exception as exc:
+                    raise ValueError("Arquivo .json inválido ou corrompido.") from exc
+                if not isinstance(parsed, dict):
+                    raise ValueError("O arquivo JSON de backup deve conter um objeto válido.")
+                backup_data = parsed
+
+            required_any = ("contas_bancarias", "cartoes", "pessoas", "modulos", "lancamentos")
+            if not any(isinstance(backup_data.get(k), list) for k in required_any):
+                raise ValueError("Arquivo de backup não contém dados financeiros reconhecidos.")
+
+            with self._io_lock:
+                self._save_local_safety_snapshot("antes_importar_backup")
+
+                if self._engine_disposer:
+                    try:
+                        self._engine_disposer()
+                    except Exception:
+                        pass
+
+                conn = sqlite3.connect(str(self.db_path), timeout=30.0)
+                conn.row_factory = sqlite3.Row
+                try:
+                    conn.execute("PRAGMA foreign_keys = OFF;")
+                    tables = {
+                        r[0]
+                        for r in conn.execute(
+                            "SELECT name FROM sqlite_master WHERE type='table'"
+                        ).fetchall()
+                    }
+
+                    def _cols(tbl: str) -> list[str]:
+                        if tbl not in tables:
+                            return []
+                        return [r[1] for r in conn.execute(f"PRAGMA table_info({tbl})").fetchall()]
+
+                    other_tokens: set[str] = set()
+                    if "pessoas" in tables and "token_acesso" in _cols("pessoas"):
+                        other_tokens = {
+                            str(r[0])
+                            for r in conn.execute(
+                                "SELECT token_acesso FROM pessoas WHERE (usuario_id IS NULL OR usuario_id != ?) AND token_acesso IS NOT NULL",
+                                (uid,),
+                            ).fetchall()
+                        }
+
+                    with conn:
+                        # Remove apenas a fatia atual do usuário autenticado (ordem filho -> pai)
+                        if "divida_parcelas" in tables and "dividas" in tables:
+                            conn.execute(
+                                "DELETE FROM divida_parcelas WHERE divida_id IN (SELECT id FROM dividas WHERE usuario_id = ?) OR usuario_id = ?",
+                                (uid, uid),
+                            )
+                        if "parcelas" in tables and "lancamentos" in tables:
+                            conn.execute(
+                                "DELETE FROM parcelas WHERE lancamento_id IN (SELECT id FROM lancamentos WHERE usuario_id = ?)",
+                                (uid,),
+                            )
+                        if "subcategorias" in tables and "modulos" in tables:
+                            conn.execute(
+                                "DELETE FROM subcategorias WHERE modulo_id IN (SELECT id FROM modulos WHERE usuario_id = ?)",
+                                (uid,),
+                            )
+                        for tbl in (
+                            "dividas",
+                            "solicitacoes_lancamento",
+                            "pagamentos_pessoa",
+                            "pagamentos_fatura",
+                            "lancamentos",
+                            "modulos",
+                            "pessoas",
+                            "cartoes",
+                            "contas_bancarias",
+                        ):
+                            if tbl in tables and "usuario_id" in _cols(tbl):
+                                conn.execute(f"DELETE FROM {tbl} WHERE usuario_id = ?", (uid,))
+
+                        conta_map: dict[int, int] = {}
+                        cartao_map: dict[int, int] = {}
+                        pessoa_map: dict[int, int] = {}
+                        modulo_map: dict[int, int] = {}
+                        subcat_map: dict[int, int] = {}
+                        lanc_map: dict[int, int] = {}
+                        divida_map: dict[int, int] = {}
+                        inserted_counts: dict[str, int] = {}
+
+                        def _insert_table(
+                            tbl: str,
+                            rows_in: list[dict[str, Any]],
+                            id_map: dict[int, int] | None = None,
+                            fk_rewrites: dict[str, dict[int, int]] | None = None,
+                            has_usuario_id: bool = True,
+                            required_fk: str | None = None,
+                        ) -> None:
+                            if tbl not in tables or not isinstance(rows_in, list):
+                                inserted_counts[tbl] = 0
+                                return
+                            cols = _cols(tbl)
+                            ins_cols = [c for c in cols if c != "id"]
+                            cnt = 0
+                            for raw in rows_in:
+                                if not isinstance(raw, dict):
+                                    continue
+                                r = dict(raw)
+                                old_id = r.get("id")
+                                if has_usuario_id and "usuario_id" in cols:
+                                    r["usuario_id"] = uid
+                                if fk_rewrites:
+                                    skip = False
+                                    for fk_col, mapping in fk_rewrites.items():
+                                        if r.get(fk_col) is not None:
+                                            try:
+                                                old_fk = int(r[fk_col])
+                                            except (TypeError, ValueError):
+                                                old_fk = None
+                                            if old_fk is not None and old_fk in mapping:
+                                                r[fk_col] = mapping[old_fk]
+                                            elif fk_col == required_fk:
+                                                skip = True
+                                                break
+                                            else:
+                                                r[fk_col] = None
+                                        elif fk_col == required_fk:
+                                            skip = True
+                                            break
+                                    if skip:
+                                        continue
+                                if tbl == "pessoas" and "token_acesso" in ins_cols:
+                                    tok = str(r.get("token_acesso") or "").strip()
+                                    if not tok or tok in other_tokens:
+                                        tok = secrets.token_urlsafe(12)
+                                    other_tokens.add(tok)
+                                    r["token_acesso"] = tok
+
+                                use_cols = [c for c in ins_cols if c in r]
+                                cur = conn.execute(
+                                    f"INSERT INTO {tbl} ({', '.join(use_cols)}) VALUES ({', '.join('?' for _ in use_cols)})",
+                                    [r[c] for c in use_cols],
+                                )
+                                new_id = int(cur.lastrowid)
+                                if id_map is not None and old_id is not None:
+                                    try:
+                                        id_map[int(old_id)] = new_id
+                                    except (TypeError, ValueError):
+                                        pass
+                                cnt += 1
+                            inserted_counts[tbl] = cnt
+
+                        _insert_table("contas_bancarias", backup_data.get("contas_bancarias") or [], conta_map)
+                        _insert_table("cartoes", backup_data.get("cartoes") or [], cartao_map)
+                        _insert_table("pessoas", backup_data.get("pessoas") or [], pessoa_map)
+                        _insert_table("modulos", backup_data.get("modulos") or [], modulo_map)
+                        _insert_table(
+                            "subcategorias",
+                            backup_data.get("subcategorias") or [],
+                            subcat_map,
+                            fk_rewrites={"modulo_id": modulo_map},
+                            has_usuario_id=False,
+                            required_fk="modulo_id",
+                        )
+                        _insert_table(
+                            "lancamentos",
+                            backup_data.get("lancamentos") or [],
+                            lanc_map,
+                            fk_rewrites={
+                                "cartao_id": cartao_map,
+                                "conta_id": conta_map,
+                                "conta_destino_id": conta_map,
+                                "pessoa_id": pessoa_map,
+                                "modulo_id": modulo_map,
+                                "subcategoria_id": subcat_map,
+                            },
+                        )
+                        _insert_table(
+                            "parcelas",
+                            backup_data.get("parcelas") or [],
+                            None,
+                            fk_rewrites={"lancamento_id": lanc_map},
+                            has_usuario_id=False,
+                            required_fk="lancamento_id",
+                        )
+                        _insert_table(
+                            "pagamentos_pessoa",
+                            backup_data.get("pagamentos_pessoa") or [],
+                            None,
+                            fk_rewrites={"pessoa_id": pessoa_map, "conta_id": conta_map},
+                            required_fk="pessoa_id",
+                        )
+                        _insert_table(
+                            "pagamentos_fatura",
+                            backup_data.get("pagamentos_fatura") or [],
+                            None,
+                            fk_rewrites={"cartao_id": cartao_map, "conta_id": conta_map},
+                            required_fk="cartao_id",
+                        )
+                        _insert_table(
+                            "solicitacoes_lancamento",
+                            backup_data.get("solicitacoes_lancamento") or [],
+                            None,
+                            fk_rewrites={
+                                "pessoa_id": pessoa_map,
+                                "cartao_id": cartao_map,
+                                "lancamento_id": lanc_map,
+                            },
+                            required_fk="pessoa_id",
+                        )
+                        _insert_table(
+                            "dividas",
+                            backup_data.get("dividas") or [],
+                            divida_map,
+                            fk_rewrites={"conta_padrao_id": conta_map, "modulo_id": modulo_map},
+                        )
+                        _insert_table(
+                            "divida_parcelas",
+                            backup_data.get("divida_parcelas") or [],
+                            None,
+                            fk_rewrites={
+                                "divida_id": divida_map,
+                                "conta_id": conta_map,
+                                "lancamento_id": lanc_map,
+                            },
+                            required_fk="divida_id",
+                        )
+
+                        # Incrementa sync_rev para propagar imediatamente a restauração
+                        if "usuarios" in tables and "sync_rev" in _cols("usuarios"):
+                            conn.execute(
+                                "UPDATE usuarios SET sync_rev = COALESCE(sync_rev, 1) + 1 WHERE id = ?",
+                                (uid,),
+                            )
+                finally:
+                    conn.close()
+
+                # Restaura apenas uploads referenciados pelo perfil restaurado (sem sobrescrever arquivos de outros perfis)
+                uploads_restored = 0
+                if extracted_uploads:
+                    referenced_names: set[str] = set()
+                    u_info_bak = backup_data.get("usuario")
+                    if isinstance(u_info_bak, dict) and isinstance(u_info_bak.get("logo_path"), str):
+                        referenced_names.add(Path(u_info_bak["logo_path"].replace("\\", "/")).name)
+                    for tbl_k, col_k in (
+                        ("pessoas", "foto_path"),
+                        ("modulos", "foto_path"),
+                        ("lancamentos", "comprovante_path"),
+                        ("solicitacoes_lancamento", "comprovante_path"),
+                    ):
+                        for r_item in backup_data.get(tbl_k) or []:
+                            if isinstance(r_item, dict) and isinstance(r_item.get(col_k), str):
+                                referenced_names.add(Path(r_item[col_k].replace("\\", "/")).name)
+
+                    other_user_uploads: set[str] = set()
+                    chk_conn = sqlite3.connect(str(self.db_path), timeout=15.0)
+                    try:
+                        chk_tables = {
+                            r[0]
+                            for r in chk_conn.execute(
+                                "SELECT name FROM sqlite_master WHERE type='table'"
+                            ).fetchall()
+                        }
+                        for tbl_o, col_o, wh_o in (
+                            ("usuarios", "logo_path", "id != ?"),
+                            ("pessoas", "foto_path", "usuario_id IS NOT NULL AND usuario_id != ?"),
+                            ("modulos", "foto_path", "usuario_id IS NOT NULL AND usuario_id != ?"),
+                            ("lancamentos", "comprovante_path", "usuario_id IS NOT NULL AND usuario_id != ?"),
+                            ("solicitacoes_lancamento", "comprovante_path", "usuario_id IS NOT NULL AND usuario_id != ?"),
+                        ):
+                            if tbl_o not in chk_tables:
+                                continue
+                            o_cols = {r[1] for r in chk_conn.execute(f"PRAGMA table_info({tbl_o})").fetchall()}
+                            if col_o in o_cols:
+                                for (val_o,) in chk_conn.execute(
+                                    f"SELECT {col_o} FROM {tbl_o} WHERE {wh_o} AND {col_o} IS NOT NULL",
+                                    (uid,),
+                                ).fetchall():
+                                    if isinstance(val_o, str) and val_o.strip():
+                                        other_user_uploads.add(Path(val_o.replace("\\", "/")).name)
+                    finally:
+                        chk_conn.close()
+
+                    self.uploads_dir.mkdir(parents=True, exist_ok=True)
+                    for fname, content in extracted_uploads.items():
+                        if fname in other_user_uploads:
+                            continue
+                        if referenced_names and fname not in referenced_names:
+                            continue
+                        _atomic_write_bytes(self.uploads_dir / fname, content)
+                        uploads_restored += 1
+
+                if self._engine_disposer:
+                    try:
+                        self._engine_disposer()
+                    except Exception:
+                        pass
+
+            # Atualiza backup automático local e nuvem após restauração
+            self.create_local_auto_backup(reason="restore_backup", force_history=True)
+            cloud_synced = False
+            if self.is_connected():
+                try:
+                    c_res = self.sync_now(force=True, reason="restore_backup")
+                    cloud_synced = bool(c_res.get("ok"))
+                except Exception:
+                    self.notify_change("restore_backup")
+
+            return {
+                "ok": True,
+                "counts": inserted_counts,
+                "uploads_restored": uploads_restored,
+                "cloud_synced": cloud_synced,
+                "mensagem": (
+                    f"Backup restaurado com sucesso! "
+                    f"({inserted_counts.get('lancamentos', 0)} lançamentos, "
+                    f"{inserted_counts.get('cartoes', 0)} cartões, "
+                    f"{inserted_counts.get('contas_bancarias', 0)} contas, "
+                    f"{inserted_counts.get('pessoas', 0)} pessoas)"
+                ),
+            }
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)

@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import sys
@@ -169,18 +170,28 @@ async def lifespan(_app: FastAPI):
         elif not cloud_sync_manager.status().get("last_sync_at"):
             cloud_sync_manager.notify_change("startup_check")
     try:
+        # Garante backup automático local inicial se o banco já tiver dados
+        if Path(DB_PATH).is_file():
+            await asyncio.to_thread(cloud_sync_manager.create_local_auto_backup, reason="startup")
+    except Exception:
+        pass
+    try:
         yield
     finally:
         # Descarrega qualquer alteração pendente antes do container encerrar (SIGTERM no Render)
         cloud_sync_manager.shutdown()
 
 
-hub_sync_client = HubSyncClient(data_dir=DATA_DIR, db_path=DB_PATH)
+hub_sync_client = HubSyncClient(
+    data_dir=DATA_DIR,
+    db_path=DB_PATH,
+    on_local_change=lambda reason: cloud_sync_manager.create_local_auto_backup(reason=reason),
+)
 
 app = FastAPI(
     title="Administração Financeira API",
     description="API REST para controle e administração financeira pessoal completa",
-    version="2.3.0",
+    version="2.4.0",
     lifespan=lifespan,
 )
 
@@ -193,7 +204,16 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Auto-Saved", "X-Cloud-Sync-Status", "X-Cloud-Sync-Rev", "Content-Disposition"],
 )
+
+
+def _safe_wal_checkpoint() -> None:
+    try:
+        with engine.begin() as conn:
+            conn.exec_driver_sql("PRAGMA wal_checkpoint(PASSIVE);")
+    except Exception:
+        pass
 
 
 @app.middleware("http")
@@ -207,7 +227,26 @@ async def auto_cloud_sync_on_mutations(request: Request, call_next):
         and not request.url.path.startswith("/auth/login")
         and not request.url.path.startswith("/whatsapp/")
     ):
-        cloud_sync_manager.notify_change(f"http_{request.method}_{request.url.path}")
+        reason = f"http_{request.method}_{request.url.path}"
+        await asyncio.to_thread(_safe_wal_checkpoint)
+        flush_res = await asyncio.to_thread(
+            cloud_sync_manager.flush_after_mutation,
+            reason=reason,
+            sync_cloud_blocking=cloud_sync_manager.is_cloud_container,
+        )
+        local_ok = bool((flush_res.get("local") or {}).get("ok"))
+        cloud_info = flush_res.get("cloud") or {}
+        if cloud_info.get("ok") and not cloud_info.get("queued"):
+            sync_state = "synced"
+        elif cloud_info.get("queued"):
+            sync_state = "queued"
+        elif cloud_info.get("skipped"):
+            sync_state = "local_only"
+        else:
+            sync_state = "error"
+        response.headers["X-Auto-Saved"] = "true" if local_ok else "partial"
+        response.headers["X-Cloud-Sync-Status"] = sync_state
+        response.headers["X-Cloud-Sync-Rev"] = str(cloud_sync_manager.status().get("revision") or 0)
     return response
 
 

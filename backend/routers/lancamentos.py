@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 from database import get_db
 import models
@@ -96,26 +97,65 @@ def listar_lancamentos(
     if cartao_id:
         query = query.filter(models.Lancamento.cartao_id == cartao_id)
     if conta_id:
-        query = query.filter(models.Lancamento.conta_id == conta_id)
+        query = query.filter(
+            or_(
+                models.Lancamento.conta_id == conta_id,
+                models.Lancamento.conta_destino_id == conta_id,
+            )
+        )
     if modulo_id:
         query = query.filter(models.Lancamento.modulo_id == modulo_id)
     if tipo:
         query = query.filter(models.Lancamento.tipo == tipo)
 
     if mes and ano:
+        _, ultimo_dia = calendar.monthrange(ano, mes)
+        inicio_mes = date(ano, mes, 1)
+        fim_mes = date(ano, mes, ultimo_dia)
         query = query.filter(
-            models.Lancamento.parcelas.any(
-                (models.Parcela.mes == mes)
-                & (models.Parcela.ano == ano)
-                & (models.Parcela.status != "cancelado")
+            or_(
+                models.Lancamento.parcelas.any(
+                    (models.Parcela.mes == mes)
+                    & (models.Parcela.ano == ano)
+                    & (models.Parcela.status != "cancelado")
+                ),
+                and_(
+                    models.Lancamento.data_lancamento >= inicio_mes,
+                    models.Lancamento.data_lancamento <= fim_mes,
+                ),
             )
         )
 
     total = query.count()
-    itens_db = query.order_by(models.Lancamento.data_lancamento.desc()).offset(offset).limit(limit).all()
+    itens_db = (
+        query.order_by(models.Lancamento.data_lancamento.desc(), models.Lancamento.id.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
 
     items = []
     for l in itens_db:
+        parcelas_ordenadas = sorted(l.parcelas, key=lambda p: p.numero)
+        ativas = [p for p in parcelas_ordenadas if p.status != "cancelado"]
+        primeira_ativa = ativas[0] if ativas else (parcelas_ordenadas[0] if parcelas_ordenadas else None)
+        mes_fat_ini = l.mes_fatura or (primeira_ativa.mes if primeira_ativa else l.data_lancamento.month)
+        ano_fat_ini = l.ano_fatura or (primeira_ativa.ano if primeira_ativa else l.data_lancamento.year)
+        parcela_mes = None
+        if mes and ano:
+            p_match = next(
+                (p for p in ativas if p.mes == mes and p.ano == ano),
+                None,
+            )
+            if p_match:
+                parcela_mes = {
+                    "id": p_match.id,
+                    "numero": p_match.numero,
+                    "valor": p_match.valor,
+                    "mes": p_match.mes,
+                    "ano": p_match.ano,
+                    "status": p_match.status,
+                }
         items.append({
             "id": l.id,
             "descricao": l.descricao,
@@ -123,6 +163,10 @@ def listar_lancamentos(
             "valor_total": l.valor_total,
             "total_parcelas": l.total_parcelas,
             "data_lancamento": str(l.data_lancamento),
+            "mes_fatura": mes_fat_ini,
+            "ano_fatura": ano_fat_ini,
+            "fatura_inicial": f"{mes_fat_ini:02d}/{ano_fat_ini}",
+            "parcela_mes": parcela_mes,
             "cartao": {"id": l.cartao.id, "nome": l.cartao.nome, "bandeira": l.cartao.bandeira, "cor": l.cartao.cor} if l.cartao else None,
             "conta": {"id": l.conta.id, "nome": l.conta.nome} if l.conta else None,
             "conta_destino": {"id": l.conta_destino.id, "nome": l.conta_destino.nome} if l.conta_destino else None,
@@ -139,7 +183,7 @@ def listar_lancamentos(
                     "ano": p.ano,
                     "status": p.status
                 }
-                for p in l.parcelas
+                for p in parcelas_ordenadas
             ]
         })
 
@@ -147,6 +191,12 @@ def listar_lancamentos(
 
 @router.post("/")
 def criar_lancamento(data: LancamentoCreate, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
+    if data.valor_total is None or data.valor_total <= 0:
+        raise HTTPException(400, "Informe um valor maior que zero.")
+
+    if data.tipo == "transferencia" and data.conta_id and data.conta_destino_id and data.conta_id == data.conta_destino_id:
+        raise HTTPException(400, "A conta de destino deve ser diferente da conta de origem.")
+
     cartao = None
     if data.cartao_id:
         cartao = (
@@ -193,15 +243,17 @@ def criar_lancamento(data: LancamentoCreate, db: Session = Depends(get_db), usua
         if not modulo:
             raise HTTPException(400, "Módulo inválido.")
 
+    mes_ini, ano_ini = determinar_mes_inicial_fatura(cartao, data.data_lancamento, data.mes_fatura, data.ano_fatura)
+
     lancamento = models.Lancamento(
         usuario_id=usuario.id,
-        descricao=data.descricao,
+        descricao=data.descricao.strip(),
         tipo=data.tipo,
         valor_total=round(data.valor_total, 2),
         total_parcelas=max(1, data.total_parcelas),
         data_lancamento=data.data_lancamento,
-        mes_fatura=data.mes_fatura,
-        ano_fatura=data.ano_fatura,
+        mes_fatura=mes_ini,
+        ano_fatura=ano_ini,
         cartao_id=data.cartao_id,
         conta_id=data.conta_id,
         conta_destino_id=data.conta_destino_id,
@@ -213,7 +265,6 @@ def criar_lancamento(data: LancamentoCreate, db: Session = Depends(get_db), usua
     db.add(lancamento)
     db.flush()
 
-    mes_ini, ano_ini = determinar_mes_inicial_fatura(cartao, data.data_lancamento, data.mes_fatura, data.ano_fatura)
     parcelas = gerar_parcelas(lancamento.id, lancamento.valor_total, lancamento.total_parcelas, mes_ini, ano_ini)
     for p in parcelas:
         db.add(p)
@@ -228,6 +279,9 @@ def criar_lancamento(data: LancamentoCreate, db: Session = Depends(get_db), usua
         "tipo": lancamento.tipo,
         "valor_total": lancamento.valor_total,
         "total_parcelas": lancamento.total_parcelas,
+        "data_lancamento": str(lancamento.data_lancamento),
+        "mes_fatura": mes_ini,
+        "ano_fatura": ano_ini,
         "parcelas_criadas": len(parcelas),
         "fatura_inicial": f"{mes_ini:02d}/{ano_ini}"
     }

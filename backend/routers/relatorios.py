@@ -7,8 +7,11 @@ from services.calculos import calcular_saldo_conta, calcular_saldo_pessoa_mes
 from services.dividas_service import calcular_resumo_dashboard_dividas
 from typing import Optional
 from datetime import date
+import calendar
 
 router = APIRouter(prefix="/relatorios", tags=["relatorios"])
+
+TIPOS_NAO_DESPESA = ("receita", "transferencia", "compra_para_mim")
 
 @router.get("/dashboard")
 def dashboard(mes: Optional[int] = None, ano: Optional[int] = None, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
@@ -87,6 +90,7 @@ def dashboard(mes: Optional[int] = None, ano: Optional[int] = None, db: Session 
         parcelas = db.query(models.Parcela).join(models.Lancamento).filter(
             models.Lancamento.usuario_id == usuario.id,
             models.Lancamento.modulo_id == m.id,
+            models.Lancamento.tipo.notin_(TIPOS_NAO_DESPESA),
             models.Parcela.mes == mes,
             models.Parcela.ano == ano,
             models.Parcela.status != "cancelado",
@@ -119,7 +123,7 @@ def dashboard(mes: Optional[int] = None, ano: Optional[int] = None, db: Session 
             "saldo": s
         })
 
-    # 5. Evolução Histórica (últimos 6 meses)
+    # 5. Evolução Histórica (últimos 6 meses — apenas gastos/despesas reais)
     evolucao = []
     for i in range(5, -1, -1):
         m = mes - i
@@ -130,6 +134,7 @@ def dashboard(mes: Optional[int] = None, ano: Optional[int] = None, db: Session 
 
         parcelas_m = db.query(models.Parcela).join(models.Lancamento).filter(
             models.Lancamento.usuario_id == usuario.id,
+            models.Lancamento.tipo.notin_(TIPOS_NAO_DESPESA),
             models.Parcela.mes == m,
             models.Parcela.ano == a,
             models.Parcela.status != "cancelado",
@@ -144,7 +149,7 @@ def dashboard(mes: Optional[int] = None, ano: Optional[int] = None, db: Session 
             "total": tot_m
         })
 
-    # 6. Previsão de Próximas Parcelas (próximos 4 meses)
+    # 6. Previsão de Próximas Parcelas (próximos 4 meses — exclui receitas/transferências)
     proximas_parcelas = []
     for i in range(1, 5):
         m = mes + i
@@ -155,6 +160,7 @@ def dashboard(mes: Optional[int] = None, ano: Optional[int] = None, db: Session 
 
         parcelas_fut = db.query(models.Parcela).join(models.Lancamento).filter(
             models.Lancamento.usuario_id == usuario.id,
+            models.Lancamento.tipo.notin_(TIPOS_NAO_DESPESA),
             models.Parcela.mes == m,
             models.Parcela.ano == a,
             models.Parcela.status == "pendente",
@@ -172,10 +178,30 @@ def dashboard(mes: Optional[int] = None, ano: Optional[int] = None, db: Session 
 
     dividas_resumo = calcular_resumo_dashboard_dividas(db, usuario.id, mes=mes, ano=ano)
 
+    _, ult_dia_dash = calendar.monthrange(ano, mes)
+    ini_dash = date(ano, mes, 1)
+    fim_dash = date(ano, mes, ult_dia_dash)
+    receitas_mes = db.query(models.Lancamento).filter(
+        models.Lancamento.usuario_id == usuario.id,
+        models.Lancamento.tipo == "receita",
+        models.Lancamento.cancelado == False,
+        models.Lancamento.data_lancamento >= ini_dash,
+        models.Lancamento.data_lancamento <= fim_dash,
+    ).all()
+    despesas_conta_mes = db.query(models.Lancamento).filter(
+        models.Lancamento.usuario_id == usuario.id,
+        models.Lancamento.tipo.in_(("despesa_conta", "emprestimo_dado", "reembolso_pessoa")),
+        models.Lancamento.cancelado == False,
+        models.Lancamento.data_lancamento >= ini_dash,
+        models.Lancamento.data_lancamento <= fim_dash,
+    ).all()
+
     return {
         "mes": mes,
         "ano": ano,
         "total_gastos_mes": round(total_cartoes, 2),
+        "total_despesas_contas_mes": round(sum(l.valor_total for l in despesas_conta_mes), 2),
+        "total_receitas_mes": round(sum(l.valor_total for l in receitas_mes), 2),
         "total_a_receber": round(total_a_receber, 2),
         "saldo_total_contas": round(saldo_total_contas, 2),
         "cartoes": dados_cartoes,
@@ -323,20 +349,72 @@ def fechamento_consolidado_mes(
         .filter(models.ContaBancaria.usuario_id == usuario.id, models.ContaBancaria.ativa == True)
         .all()
     )
+    _, ult_dia_fech = calendar.monthrange(ano, mes)
+    ini_fech = date(ano, mes, 1)
+    fim_fech = date(ano, mes, ult_dia_fech)
+
     dados_contas = []
+    total_saidas_contas = 0.0
+    total_entradas_contas = 0.0
     for c in contas:
+        lancs_conta_mes = db.query(models.Lancamento).filter(
+            models.Lancamento.usuario_id == usuario.id,
+            (models.Lancamento.conta_id == c.id) | (models.Lancamento.conta_destino_id == c.id),
+            models.Lancamento.cancelado == False,
+            models.Lancamento.data_lancamento >= ini_fech,
+            models.Lancamento.data_lancamento <= fim_fech,
+        ).all()
+
+        entradas_c = 0.0
+        saidas_c = 0.0
+        for lc in lancs_conta_mes:
+            if lc.tipo == "receita" and lc.conta_id == c.id:
+                entradas_c += lc.valor_total
+            elif lc.tipo == "transferencia":
+                if lc.conta_destino_id == c.id:
+                    entradas_c += lc.valor_total
+                if lc.conta_id == c.id:
+                    saidas_c += lc.valor_total
+            elif lc.tipo in ("despesa_conta", "emprestimo_dado", "reembolso_pessoa") and lc.conta_id == c.id:
+                saidas_c += lc.valor_total
+
+        pags_rec_c = db.query(models.PagamentoPessoa).filter(
+            models.PagamentoPessoa.usuario_id == usuario.id,
+            models.PagamentoPessoa.conta_id == c.id,
+            models.PagamentoPessoa.data >= ini_fech,
+            models.PagamentoPessoa.data <= fim_fech,
+        ).all()
+        entradas_c += sum(pr.valor for pr in pags_rec_c)
+
+        pags_fat_c = db.query(models.PagamentoFatura).filter(
+            models.PagamentoFatura.usuario_id == usuario.id,
+            models.PagamentoFatura.conta_id == c.id,
+            models.PagamentoFatura.data >= ini_fech,
+            models.PagamentoFatura.data <= fim_fech,
+        ).all()
+        saidas_c += sum(pf.valor for pf in pags_fat_c)
+
+        entradas_c = round(entradas_c, 2)
+        saidas_c = round(saidas_c, 2)
+        total_entradas_contas += entradas_c
+        total_saidas_contas += saidas_c
+
         dados_contas.append({
             "id": c.id,
             "nome": c.nome,
             "banco": c.banco,
             "cor": c.cor,
-            "saldo_atual": calcular_saldo_conta(db, c.id)
+            "saldo_atual": calcular_saldo_conta(db, c.id),
+            "total_entradas": entradas_c,
+            "total_saidas": saidas_c,
         })
 
     return {
         "mes": mes,
         "ano": ano,
         "total_faturas_cartoes": round(total_faturas, 2),
+        "total_saidas_contas": round(total_saidas_contas, 2),
+        "total_entradas_contas": round(total_entradas_contas, 2),
         "total_a_receber_pessoas": round(total_a_receber, 2),
         "total_a_pagar_pessoas": round(total_a_pagar, 2),
         "saldo_liquido_mes": round(total_a_receber - total_a_pagar, 2),
@@ -360,6 +438,7 @@ def parcelas_futuras(meses: int = 12, db: Session = Depends(get_db), usuario = D
 
         parcelas = db.query(models.Parcela).join(models.Lancamento).filter(
             models.Lancamento.usuario_id == usuario.id,
+            models.Lancamento.tipo.notin_(TIPOS_NAO_DESPESA),
             models.Parcela.mes == m,
             models.Parcela.ano == a,
             models.Parcela.status == "pendente",
@@ -372,13 +451,16 @@ def parcelas_futuras(meses: int = 12, db: Session = Depends(get_db), usuario = D
             itens.append({
                 "lancamento_id": l.id,
                 "descricao": l.descricao,
+                "tipo": l.tipo,
                 "parcela": f"{p.numero}/{l.total_parcelas}",
                 "valor": p.valor,
                 "cartao": l.cartao.nome if l.cartao else None,
                 "cartao_cor": l.cartao.cor if l.cartao else None,
                 "cartao_bandeira": l.cartao.bandeira if l.cartao else None,
+                "conta": l.conta.nome if l.conta else None,
                 "pessoa": l.pessoa.nome if l.pessoa else "Você",
-                "modulo": l.modulo.nome if l.modulo else None
+                "modulo": l.modulo.nome if l.modulo else None,
+                "data_lancamento": str(l.data_lancamento),
             })
 
         resultado.append({

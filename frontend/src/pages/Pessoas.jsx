@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import Avatar from '../components/Avatar';
 import { getCardBrand } from '../components/cardBrand';
+import { todayLocalISO } from '../components/dateUtils';
 import { mediaUrl } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import {
@@ -280,7 +281,7 @@ function ModalEditarPessoa({ pessoa, onClose, onSaved }) {
 }
 
 function ModalRegistrarPagamento({ pessoa, contas, onClose, onSaved }) {
-  const hoje = new Date().toISOString().split('T')[0];
+  const hoje = todayLocalISO();
   const [form, setForm] = useState({
     valor: '',
     data: hoje,
@@ -841,7 +842,7 @@ function ModalLinkLancamento({ pessoa, onClose }) {
         <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-[11px] text-emerald-500 space-y-1">
           <strong>✅ Link HTTPS 24/7 sincronizado entre Celular e PC:</strong>
           <p>
-            Funciona em qualquer celular (Wi-Fi, 4G ou 5G). Toda compra ou foto enviada por {pessoa.nome} aparece automaticamente em <strong>Aprovações</strong> no seu celular e neste computador.
+            Funciona em qualquer celular (Wi-Fi, 4G ou 5G). Toda compra ou foto enviada por {pessoa.nome} fica sincronizada com segurança no seu painel.
           </p>
         </div>
 

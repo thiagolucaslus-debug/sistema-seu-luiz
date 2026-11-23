@@ -6,8 +6,9 @@ import models
 import auth
 from tenancy import bump_user_sync_rev
 from services.calculos import calcular_saldo_conta
-from pydantic import BaseModel
-from typing import Optional, List
+from routers.lancamentos import gerar_parcelas
+from pydantic import BaseModel, Field
+from typing import Literal, Optional, List
 from datetime import date
 import calendar
 
@@ -31,6 +32,21 @@ class ContaUpdate(BaseModel):
     tipo: Optional[str] = None
     cor: Optional[str] = None
     ativa: Optional[bool] = None
+
+class MovimentacaoContaRequest(BaseModel):
+    tipo: Literal["entrada", "saida", "receita", "despesa_conta"]
+    valor: float = Field(gt=0, allow_inf_nan=False)
+    descricao: str = Field(min_length=1, max_length=255)
+    data_lancamento: Optional[date] = None
+    pessoa_id: Optional[int] = None
+    modulo_id: Optional[int] = None
+    observacoes: Optional[str] = None
+
+class AjustarSaldoContaRequest(BaseModel):
+    saldo_desejado: float = Field(allow_inf_nan=False)
+    descricao: Optional[str] = None
+    data_lancamento: Optional[date] = None
+    observacoes: Optional[str] = None
 
 @router.get("/")
 def listar_contas(db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
@@ -185,7 +201,7 @@ def extrato_conta(id: int, mes: Optional[int] = None, ano: Optional[int] = None,
             "modulo": "Fatura de Cartão"
         })
 
-    movimentacoes.sort(key=lambda x: x["data"], reverse=True)
+    movimentacoes.sort(key=lambda x: (x["data"], x["id"] if isinstance(x["id"], int) else 0), reverse=True)
 
     return {
         "conta": {
@@ -197,4 +213,168 @@ def extrato_conta(id: int, mes: Optional[int] = None, ano: Optional[int] = None,
             "cor": conta.cor
         },
         "movimentacoes": movimentacoes
+    }
+
+
+@router.post("/{id}/movimentar")
+def movimentar_conta(
+    id: int,
+    req: MovimentacaoContaRequest,
+    db: Session = Depends(get_db),
+    usuario = Depends(auth.get_usuario_atual),
+):
+    """Lança diretamente uma entrada (receita) ou saída (despesa_conta) vinculada a esta conta bancária."""
+    conta = (
+        db.query(models.ContaBancaria)
+        .filter(
+            models.ContaBancaria.id == id,
+            models.ContaBancaria.usuario_id == usuario.id,
+            models.ContaBancaria.ativa == True,
+        )
+        .first()
+    )
+    if not conta:
+        raise HTTPException(status_code=404, detail="Conta bancária não encontrada.")
+
+    if req.pessoa_id is not None:
+        pessoa = (
+            db.query(models.Pessoa)
+            .filter(models.Pessoa.id == req.pessoa_id, models.Pessoa.usuario_id == usuario.id)
+            .first()
+        )
+        if not pessoa:
+            raise HTTPException(status_code=400, detail="Pessoa inválida.")
+
+    if req.modulo_id is not None:
+        modulo = (
+            db.query(models.Modulo)
+            .filter(models.Modulo.id == req.modulo_id, models.Modulo.usuario_id == usuario.id)
+            .first()
+        )
+        if not modulo:
+            raise HTTPException(status_code=400, detail="Módulo inválido.")
+
+    tipo_lanc = "receita" if req.tipo in ("entrada", "receita") else "despesa_conta"
+    data_mov = req.data_lancamento or date.today()
+    valor_limpo = round(float(req.valor), 2)
+    desc_limpa = req.descricao.strip()
+    if not desc_limpa:
+        raise HTTPException(status_code=400, detail="Informe uma descrição para a movimentação.")
+
+    lancamento = models.Lancamento(
+        usuario_id=usuario.id,
+        descricao=desc_limpa,
+        tipo=tipo_lanc,
+        valor_total=valor_limpo,
+        total_parcelas=1,
+        data_lancamento=data_mov,
+        mes_fatura=data_mov.month,
+        ano_fatura=data_mov.year,
+        conta_id=conta.id,
+        pessoa_id=req.pessoa_id if tipo_lanc == "despesa_conta" else None,
+        modulo_id=req.modulo_id,
+        observacoes=req.observacoes.strip() if req.observacoes else None,
+    )
+    db.add(lancamento)
+    db.flush()
+
+    for p in gerar_parcelas(lancamento.id, valor_limpo, 1, data_mov.month, data_mov.year):
+        db.add(p)
+
+    bump_user_sync_rev(db, usuario.id)
+    db.commit()
+    db.refresh(lancamento)
+
+    novo_saldo = calcular_saldo_conta(db, conta.id)
+    return {
+        "ok": True,
+        "id": lancamento.id,
+        "lancamento_id": lancamento.id,
+        "conta_id": conta.id,
+        "tipo": tipo_lanc,
+        "entrada": tipo_lanc == "receita",
+        "valor": valor_limpo,
+        "descricao": lancamento.descricao,
+        "data_lancamento": str(lancamento.data_lancamento),
+        "saldo_atual": novo_saldo,
+        "mensagem": (
+            f"Entrada de R$ {valor_limpo:.2f} adicionada em {conta.nome}."
+            if tipo_lanc == "receita"
+            else f"Saída de R$ {valor_limpo:.2f} registrada em {conta.nome}."
+        ),
+    }
+
+
+@router.post("/{id}/ajustar-saldo")
+def ajustar_saldo_conta(
+    id: int,
+    req: AjustarSaldoContaRequest,
+    db: Session = Depends(get_db),
+    usuario = Depends(auth.get_usuario_atual),
+):
+    """Ajusta o saldo real da conta criando um lançamento auditável de entrada ou saída pela diferença."""
+    conta = (
+        db.query(models.ContaBancaria)
+        .filter(
+            models.ContaBancaria.id == id,
+            models.ContaBancaria.usuario_id == usuario.id,
+            models.ContaBancaria.ativa == True,
+        )
+        .first()
+    )
+    if not conta:
+        raise HTTPException(status_code=404, detail="Conta bancária não encontrada.")
+
+    saldo_atual = calcular_saldo_conta(db, conta.id)
+    diferenca = round(float(req.saldo_desejado) - float(saldo_atual), 2)
+    if diferenca == 0.0:
+        return {
+            "ok": True,
+            "lancamento_id": None,
+            "conta_id": conta.id,
+            "saldo_anterior": saldo_atual,
+            "saldo_atual": saldo_atual,
+            "diferenca": 0.0,
+            "mensagem": "O saldo da conta já está igual ao valor informado.",
+        }
+
+    tipo_lanc = "receita" if diferenca > 0 else "despesa_conta"
+    valor_abs = round(abs(diferenca), 2)
+    data_mov = req.data_lancamento or date.today()
+    desc_default = "Ajuste de saldo (+)" if diferenca > 0 else "Ajuste de saldo (-)"
+    desc_limpa = (req.descricao or "").strip() or desc_default
+
+    lancamento = models.Lancamento(
+        usuario_id=usuario.id,
+        descricao=desc_limpa,
+        tipo=tipo_lanc,
+        valor_total=valor_abs,
+        total_parcelas=1,
+        data_lancamento=data_mov,
+        mes_fatura=data_mov.month,
+        ano_fatura=data_mov.year,
+        conta_id=conta.id,
+        observacoes=req.observacoes.strip() if req.observacoes else f"Ajuste de R$ {saldo_atual:.2f} para R$ {req.saldo_desejado:.2f}",
+    )
+    db.add(lancamento)
+    db.flush()
+
+    for p in gerar_parcelas(lancamento.id, valor_abs, 1, data_mov.month, data_mov.year):
+        db.add(p)
+
+    bump_user_sync_rev(db, usuario.id)
+    db.commit()
+    db.refresh(lancamento)
+
+    novo_saldo = calcular_saldo_conta(db, conta.id)
+    return {
+        "ok": True,
+        "id": lancamento.id,
+        "lancamento_id": lancamento.id,
+        "conta_id": conta.id,
+        "tipo": tipo_lanc,
+        "saldo_anterior": saldo_atual,
+        "saldo_atual": novo_saldo,
+        "diferenca": diferenca,
+        "mensagem": f"Saldo de {conta.nome} ajustado para R$ {novo_saldo:.2f}.",
     }

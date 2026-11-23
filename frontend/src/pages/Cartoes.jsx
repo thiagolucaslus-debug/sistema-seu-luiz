@@ -12,6 +12,7 @@ import {
   normalizeHexColor
 } from '../components/cardBrand';
 import Avatar from '../components/Avatar';
+import { todayLocalISO } from '../components/dateUtils';
 
 function fmt(val) {
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val || 0);
@@ -279,7 +280,7 @@ function ModalCartaoForm({ cartaoInicial = null, onClose, onSaved }) {
 function ModalPagarFatura({ cartao, fatura, contas, onClose, onSaved }) {
   const [form, setForm] = useState({
     valor: fatura.total,
-    data: new Date().toISOString().split('T')[0],
+    data: todayLocalISO(),
     conta_id: contas[0]?.id || ''
   });
   const [submitting, setSubmitting] = useState(false);

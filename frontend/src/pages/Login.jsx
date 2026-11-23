@@ -6,6 +6,7 @@ import { Lock, User, ShieldCheck, Eye, EyeOff } from 'lucide-react';
 
 export default function Login() {
   const [isSetup, setIsSetup] = useState(true);
+  const [cloudWaking, setCloudWaking] = useState(false);
   const [modo, setModo] = useState('login'); // 'login' | 'cadastro'
   const [loading, setLoading] = useState(true);
   const [form, setForm] = useState({ nome: '', usuario: '', senha: '' });
@@ -16,14 +17,33 @@ export default function Login() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    authApi.checkSetup()
-      .then(res => {
-        const configured = Boolean(res.data?.configured);
-        setIsSetup(configured);
-        if (!configured) setModo('cadastro');
-      })
-      .catch(() => { setIsSetup(true); })
-      .finally(() => { setLoading(false); });
+    let active = true;
+    let retryTimer = null;
+    const check = () => {
+      authApi.checkSetup()
+        .then(res => {
+          if (!active) return;
+          const configured = Boolean(res.data?.configured);
+          const waking = Boolean(res.data?.cloud_waking);
+          setIsSetup(configured);
+          setCloudWaking(waking);
+          if (!configured && !waking) setModo('cadastro');
+          if (waking) {
+            retryTimer = setTimeout(check, 3000);
+          }
+        })
+        .catch(() => {
+          if (active) setIsSetup(true);
+        })
+        .finally(() => {
+          if (active) setLoading(false);
+        });
+    };
+    check();
+    return () => {
+      active = false;
+      if (retryTimer) clearTimeout(retryTimer);
+    };
   }, []);
 
   const handleSubmit = async (e) => {
@@ -101,6 +121,13 @@ export default function Login() {
             Criar Novo Perfil
           </button>
         </div>
+
+        {cloudWaking && (
+          <div className="bg-blue-500/10 border border-blue-500/30 text-blue-300 px-4 py-3 rounded-xl mb-5 text-xs font-medium flex items-center gap-2.5" role="status">
+            <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin shrink-0"></div>
+            <span>Acordando servidor na nuvem e restaurando seus dados automaticamente... Aguarde alguns segundos.</span>
+          </div>
+        )}
 
         {error && (
           <div className="bg-red-500/10 border border-red-500/20 text-rose-400 px-4 py-3 rounded-xl mb-5 text-sm font-medium flex items-center gap-2">

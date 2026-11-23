@@ -297,6 +297,7 @@ async function startBackend(forceRestart = false) {
     SEU_LUIZ_NO_BROWSER: '1',
     SEU_LUIZ_DESKTOP_MODE: '1',
     SEU_LUIZ_DATA_DIR: userDataDir,
+    CLOUD_CONFIG_DIR: userDataDir,
     SEU_LUIZ_CLOUD_CONFIG_DIR: userDataDir,
     SEU_LUIZ_HUB_URL: process.env.SEU_LUIZ_HUB_URL || DEFAULT_HUB_URL,
   };

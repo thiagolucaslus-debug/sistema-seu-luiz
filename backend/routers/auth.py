@@ -1,4 +1,5 @@
 from io import BytesIO
+import os
 from pathlib import Path
 from uuid import uuid4
 
@@ -49,7 +50,16 @@ def dados_perfil(usuario: models.Usuario):
 def check_setup(db: Session = Depends(get_db)):
     """Verifica se o sistema já foi configurado com usuário mestre."""
     qtd = db.query(models.Usuario).count()
-    return {"configured": qtd > 0}
+    if qtd == 0 and (os.environ.get("RENDER") or os.environ.get("RENDER_SERVICE_ID")):
+        try:
+            from routers.cloud import get_cloud_manager
+
+            mgr = get_cloud_manager()
+            if not mgr.is_connected():
+                return {"configured": True, "cloud_waking": True}
+        except Exception:
+            pass
+    return {"configured": qtd > 0, "cloud_waking": False}
 
 @router.post("/setup")
 def setup_inicial(req: SetupRequest, db: Session = Depends(get_db)):

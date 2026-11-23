@@ -51,6 +51,8 @@ else:
 # Diretório seguro para credenciais OAuth locais (fora do repositório Git e fora da árvore pública do app)
 if os.environ.get("CLOUD_CONFIG_DIR"):
     CLOUD_CONFIG_DIR = os.environ["CLOUD_CONFIG_DIR"]
+elif os.environ.get("SEU_LUIZ_CLOUD_CONFIG_DIR"):
+    CLOUD_CONFIG_DIR = os.environ["SEU_LUIZ_CLOUD_CONFIG_DIR"]
 elif os.name == "nt":
     CLOUD_CONFIG_DIR = os.path.join(
         os.environ.get("LOCALAPPDATA", os.environ.get("APPDATA", DATA_DIR)),
