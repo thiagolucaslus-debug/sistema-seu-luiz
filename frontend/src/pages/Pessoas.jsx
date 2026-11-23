@@ -1,36 +1,48 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import Avatar from '../components/Avatar';
 import { getCardBrand } from '../components/cardBrand';
 import { todayLocalISO } from '../components/dateUtils';
+import {
+  MONTHS_FULL,
+  PAYMENT_FORM_OPTIONS,
+  monthKey,
+  parseMonthKey,
+  shiftMonth,
+  defaultDateForMonth,
+  parseBrlNumber,
+  formatEditableBrl,
+  buildMonthTabs,
+  encodeOriginValue,
+  decodeOriginPatch,
+  normalizePaymentFormaCode,
+} from '../components/pessoasSpreadsheet';
 import { mediaUrl } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import {
   pessoas as pessoasApi,
   contas as contasApi,
+  cartoes as cartoesApi,
   lancamentos as lancamentosApi,
   whatsapp as whatsappApi,
-  publicShareOrigin
+  publicShareOrigin,
 } from '../api/client';
 import {
-  Users, Plus, ChevronDown, ChevronUp, Download,
-  MessageCircle, DollarSign, X, CheckCircle, Trash2,
-  Camera, Edit2, User, Link2, Share2, RotateCcw, Eraser, AlertTriangle
+  Users, Plus, Download, MessageCircle, DollarSign, X, CheckCircle,
+  Trash2, Camera, Edit2, User, Link2, Share2, RotateCcw, Eraser,
+  AlertTriangle, Table2, Loader2, ChevronLeft, ChevronRight, Check,
 } from 'lucide-react';
 
 function fmt(val) {
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val || 0);
 }
 
-const MESES_NOMES = [
-  'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
-  'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
-];
+const MESES_NOMES = MONTHS_FULL;
 
 function ModalNovaPessoa({ onClose, onSaved }) {
   const [form, setForm] = useState({
     nome: '',
     telefone: '',
-    cor: '#10B981'
+    cor: '#10B981',
   });
   const [fotoFile, setFotoFile] = useState(null);
   const [fotoPreview, setFotoPreview] = useState(null);
@@ -58,7 +70,7 @@ function ModalNovaPessoa({ onClose, onSaved }) {
         await pessoasApi.uploadFoto(pessoaCriada.id, formData);
       }
 
-      onSaved();
+      onSaved(pessoaCriada);
       onClose();
     } catch (err) {
       alert('Erro ao cadastrar pessoa: ' + (err.response?.data?.detail || err.message));
@@ -157,7 +169,7 @@ function ModalEditarPessoa({ pessoa, onClose, onSaved }) {
   const [form, setForm] = useState({
     nome: pessoa.nome || '',
     telefone: pessoa.telefone || '',
-    cor: pessoa.cor || '#10B981'
+    cor: pessoa.cor || '#10B981',
   });
   const [fotoFile, setFotoFile] = useState(null);
   const [fotoPreview, setFotoPreview] = useState(pessoa.foto_path ? mediaUrl(pessoa.foto_path) : null);
@@ -280,15 +292,14 @@ function ModalEditarPessoa({ pessoa, onClose, onSaved }) {
   );
 }
 
-function ModalRegistrarPagamento({ pessoa, contas, onClose, onSaved }) {
-  const hoje = todayLocalISO();
+function ModalRegistrarPagamento({ pessoa, contas, defaultDate, onClose, onSaved }) {
   const [form, setForm] = useState({
     valor: '',
-    data: hoje,
+    data: defaultDate || todayLocalISO(),
     observacao: '',
     forma: 'dinheiro',
     outra_forma: '',
-    conta_id: ''
+    conta_id: '',
   });
   const [submitting, setSubmitting] = useState(false);
 
@@ -302,7 +313,7 @@ function ModalRegistrarPagamento({ pessoa, contas, onClose, onSaved }) {
         observacao: form.observacao,
         forma: form.forma,
         outra_forma: form.forma === 'outro' ? form.outra_forma : null,
-        conta_id: form.conta_id ? parseInt(form.conta_id) : null
+        conta_id: form.conta_id ? parseInt(form.conta_id, 10) : null,
       });
       onSaved();
       onClose();
@@ -347,31 +358,44 @@ function ModalRegistrarPagamento({ pessoa, contas, onClose, onSaved }) {
 
           <label className="block">
             <span className="label">Forma de pagamento</span>
-            <select className="input" value={form.forma}
-              onChange={e => setForm({ ...form, forma: e.target.value, conta_id: '' })}>
-              <option value="dinheiro">Dinheiro em mãos</option>
-              <option value="pix">Pix</option>
-              <option value="transferencia">Transferência bancária</option>
-              <option value="abatimento">Abatimento de dívida</option>
-              <option value="outro">Outro</option>
+            <select
+              className="input"
+              value={form.forma}
+              onChange={e => setForm({ ...form, forma: e.target.value, conta_id: '' })}
+            >
+              {PAYMENT_FORM_OPTIONS.map(opt => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
             </select>
           </label>
           {form.forma === 'outro' && (
-            <label className="block"><span className="label">Qual foi a forma de pagamento?</span>
-              <input className="input" value={form.outra_forma} maxLength={100} required
-                onChange={e => setForm({ ...form, outra_forma: e.target.value })} />
+            <label className="block">
+              <span className="label">Qual foi a forma de pagamento?</span>
+              <input
+                className="input"
+                value={form.outra_forma}
+                maxLength={100}
+                required
+                onChange={e => setForm({ ...form, outra_forma: e.target.value })}
+              />
             </label>
           )}
           {['pix', 'transferencia', 'outro'].includes(form.forma) && (
-            <label className="block"><span className="label">Conta de destino</span>
-              <select className="input" value={form.conta_id}
-                onChange={e => setForm({ ...form, conta_id: e.target.value })}>
+            <label className="block">
+              <span className="label">Conta de destino</span>
+              <select
+                className="input"
+                value={form.conta_id}
+                onChange={e => setForm({ ...form, conta_id: e.target.value })}
+              >
                 <option value="">Sem vincular a uma conta</option>
                 {contas.map(c => <option key={c.id} value={c.id}>{c.nome} ({c.banco})</option>)}
               </select>
             </label>
           )}
-          {form.forma === 'abatimento' && <p className="text-sm text-[var(--muted)]">O valor será descontado do saldo da pessoa, sem entrada em conta.</p>}
+          {form.forma === 'abatimento' && (
+            <p className="text-sm text-[var(--muted)]">O valor será descontado do saldo da pessoa, sem entrada em conta.</p>
+          )}
 
           <div>
             <label className="label">Observação / Comprovante</label>
@@ -468,17 +492,9 @@ function ModalZerarPessoa({ pessoa, mesInicial, anoInicial, temLancamentosMes = 
             }`}
           >
             <div className="flex items-start gap-3">
-              <input
-                type="radio"
-                name="opcaoZerar"
-                checked={opcao === 'tudo'}
-                onChange={() => setOpcao('tudo')}
-                className="mt-1"
-              />
+              <input type="radio" name="opcaoZerar" checked={opcao === 'tudo'} onChange={() => setOpcao('tudo')} className="mt-1" />
               <div>
-                <span className="font-bold text-sm text-[var(--ink)] block">
-                  Zerar Conta Completa (Apagar todos os lançamentos)
-                </span>
+                <span className="font-bold text-sm text-[var(--ink)] block">Zerar Conta Completa (Apagar todos os lançamentos)</span>
                 <span className="text-xs text-[var(--muted)] block mt-0.5">
                   Cancela todas as compras/parcelas de {pessoa.nome} e deixa a conta zerada em R$ 0,00.
                 </span>
@@ -494,17 +510,9 @@ function ModalZerarPessoa({ pessoa, mesInicial, anoInicial, temLancamentosMes = 
             }`}
           >
             <div className="flex items-start gap-3">
-              <input
-                type="radio"
-                name="opcaoZerar"
-                checked={opcao === 'mes'}
-                onChange={() => setOpcao('mes')}
-                className="mt-1"
-              />
+              <input type="radio" name="opcaoZerar" checked={opcao === 'mes'} onChange={() => setOpcao('mes')} className="mt-1" />
               <div className="flex-1">
-                <span className="font-bold text-sm text-[var(--ink)] block">
-                  Limpar Apenas os Lançamentos de um Mês Específico
-                </span>
+                <span className="font-bold text-sm text-[var(--ink)] block">Limpar Apenas os Lançamentos de um Mês Específico</span>
                 <span className="text-xs text-[var(--muted)] block mt-0.5">
                   Remove somente as parcelas e registros do mês selecionado abaixo, mantendo outros meses.
                 </span>
@@ -520,17 +528,9 @@ function ModalZerarPessoa({ pessoa, mesInicial, anoInicial, temLancamentosMes = 
             }`}
           >
             <div className="flex items-start gap-3">
-              <input
-                type="radio"
-                name="opcaoZerar"
-                checked={opcao === 'abater'}
-                onChange={() => setOpcao('abater')}
-                className="mt-1"
-              />
+              <input type="radio" name="opcaoZerar" checked={opcao === 'abater'} onChange={() => setOpcao('abater')} className="mt-1" />
               <div>
-                <span className="font-bold text-sm text-[var(--ink)] block">
-                  Apenas Quitar / Perdoar Dívida (Manter compras na fatura do cartão)
-                </span>
+                <span className="font-bold text-sm text-[var(--ink)] block">Apenas Quitar / Perdoar Dívida (Manter compras na fatura do cartão)</span>
                 <span className="text-xs text-[var(--muted)] block mt-0.5">
                   Registra um abatimento automático deixando o saldo devedor de {pessoa.nome} em R$ 0,00 sem apagar as compras do cartão.
                 </span>
@@ -594,11 +594,7 @@ function ModalZerarPessoa({ pessoa, mesInicial, anoInicial, temLancamentosMes = 
 
           {opcao !== 'abater' && (
             <label className="flex items-center gap-2.5 p-3 rounded-xl bg-[var(--raised)] border border-[var(--line)] text-xs cursor-pointer">
-              <input
-                type="checkbox"
-                checked={limparPagamentos}
-                onChange={(e) => setLimparPagamentos(e.target.checked)}
-              />
+              <input type="checkbox" checked={limparPagamentos} onChange={(e) => setLimparPagamentos(e.target.checked)} />
               <span className="text-[var(--ink)] font-medium">
                 Limpar também os pagamentos recebidos no período (evita ficar saldo de crédito sobrando)
               </span>
@@ -606,9 +602,7 @@ function ModalZerarPessoa({ pessoa, mesInicial, anoInicial, temLancamentosMes = 
           )}
 
           <div className="flex gap-2 justify-end pt-3 border-t border-[var(--line)]">
-            <button type="button" onClick={onClose} className="btn-secondary">
-              Cancelar
-            </button>
+            <button type="button" onClick={onClose} className="btn-secondary">Cancelar</button>
             <button type="submit" disabled={submitting} className="btn-primary">
               {submitting ? 'Processando...' : 'Confirmar e Zerar'}
             </button>
@@ -677,9 +671,7 @@ function ModalConfirmarExclusaoPessoa({ pessoa, onClose, onOpenZerar, onDeleted 
             <span>{deleting ? 'Removendo...' : `Remover Cadastro de ${pessoa.nome}`}</span>
           </button>
 
-          <button type="button" onClick={onClose} className="btn-secondary w-full py-2 text-xs">
-            Cancelar
-          </button>
+          <button type="button" onClick={onClose} className="btn-secondary w-full py-2 text-xs">Cancelar</button>
         </div>
       </div>
     </div>
@@ -762,9 +754,7 @@ function ModalExcluirLancamentoPessoa({ item, nomeMes, onClose, onSaved }) {
             </span>
           </button>
 
-          <button type="button" onClick={onClose} className="btn-secondary w-full py-2 text-xs">
-            Cancelar
-          </button>
+          <button type="button" onClick={onClose} className="btn-secondary w-full py-2 text-xs">Cancelar</button>
         </div>
       </div>
     </div>
@@ -818,19 +808,12 @@ function ModalLinkLancamento({ pessoa, onClose }) {
         <div>
           <label className="label text-[var(--ink)] font-semibold">Link Pessoal de Lançamento (Nuvem 24/7)</label>
           <div className="flex items-center gap-2">
-            <input
-              type="text"
-              readOnly
-              value={link}
-              className="input text-xs font-mono select-all"
-            />
+            <input type="text" readOnly value={link} className="input text-xs font-mono select-all" />
             <button
               type="button"
               onClick={copiar}
               className={`px-3.5 py-2.5 rounded-xl text-xs font-bold shrink-0 transition-all flex items-center gap-1.5 ${
-                copiado
-                  ? 'bg-emerald-600 text-white shadow'
-                  : 'btn-secondary text-blue-500'
+                copiado ? 'bg-emerald-600 text-white shadow' : 'btn-secondary text-blue-500'
               }`}
             >
               {copiado ? <CheckCircle size={15} /> : <Share2 size={15} />}
@@ -870,74 +853,1031 @@ function ModalLinkLancamento({ pessoa, onClose }) {
   );
 }
 
-function CardPessoa({ pessoa, contas, onRefresh, modoInativas = false }) {
+/**
+ * Linha inline editável da planilha de Compras & Parcelas do mês.
+ * Cada célula salva automaticamente no blur / Enter / mudança de select.
+ */
+function LinhaLancamentoEditavel({
+  item,
+  cartoes,
+  contas,
+  savedHighlight,
+  onSaveLaunch,
+  onSaveParcela,
+  onValidationError,
+  onRequestDelete,
+}) {
+  const [dataVal, setDataVal] = useState(item.data_lancamento || '');
+  const [descVal, setDescVal] = useState(item.descricao || '');
+  const [originVal, setOriginVal] = useState(encodeOriginValue(item));
+  const [valorVal, setValorVal] = useState(formatEditableBrl(item.valor));
+  const [statusVal, setStatusVal] = useState(item.status || 'pendente');
+  const focusedFieldRef = useRef(null);
+
+  useEffect(() => {
+    if (focusedFieldRef.current !== 'data') setDataVal(item.data_lancamento || '');
+    if (focusedFieldRef.current !== 'descricao') setDescVal(item.descricao || '');
+    if (focusedFieldRef.current !== 'origin') setOriginVal(encodeOriginValue(item));
+    if (focusedFieldRef.current !== 'valor') setValorVal(formatEditableBrl(item.valor));
+    if (focusedFieldRef.current !== 'status') setStatusVal(item.status || 'pendente');
+  }, [item.data_lancamento, item.descricao, item.cartao_id, item.conta_id, item.valor, item.status]);
+
+  const cardDotColor = useMemo(() => {
+    if (originVal.startsWith('card:')) {
+      const cid = Number(originVal.slice(5));
+      const found = cartoes.find(c => c.id === cid);
+      if (found) return getCardBrand(found.nome, found.cor).color;
+      if (item.cartao) return getCardBrand(item.cartao, item.cartao_cor).color;
+    }
+    return null;
+  }, [originVal, cartoes, item.cartao, item.cartao_cor]);
+
+  const cardMissingFromList = Boolean(
+    item.cartao_id && !cartoes.some(c => c.id === item.cartao_id)
+  );
+  const contaMissingFromList = Boolean(
+    item.conta_id && !contas.some(c => c.id === item.conta_id)
+  );
+
+  const commitDescricao = async () => {
+    focusedFieldRef.current = null;
+    const trimmed = descVal.trim();
+    if (!trimmed) {
+      setDescVal(item.descricao || '');
+      onValidationError('A descrição não pode ficar vazia.');
+      return;
+    }
+    if (trimmed === (item.descricao || '').trim()) return;
+    const ok = await onSaveLaunch(item, { descricao: trimmed });
+    if (!ok) setDescVal(item.descricao || '');
+  };
+
+  const commitData = async (nextDate) => {
+    setDataVal(nextDate);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(nextDate)) return;
+    if (nextDate === item.data_lancamento) return;
+    const ok = await onSaveLaunch(item, { data_lancamento: nextDate });
+    if (!ok) setDataVal(item.data_lancamento || '');
+  };
+
+  const commitOrigin = async (nextOrigin) => {
+    const prev = originVal;
+    setOriginVal(nextOrigin);
+    if (nextOrigin === encodeOriginValue(item)) return;
+    const patch = decodeOriginPatch(nextOrigin, item.tipo);
+    if (!patch) {
+      setOriginVal(prev);
+      return;
+    }
+    const ok = await onSaveLaunch(item, patch);
+    if (!ok) setOriginVal(prev);
+  };
+
+  const commitValor = async () => {
+    focusedFieldRef.current = null;
+    const parsed = parseBrlNumber(valorVal);
+    if (parsed === null) {
+      setValorVal(formatEditableBrl(item.valor));
+      onValidationError('Informe um valor válido maior que zero.');
+      return;
+    }
+    setValorVal(formatEditableBrl(parsed));
+    if (Math.abs(parsed - Number(item.valor || 0)) < 0.005) return;
+    const ok = await onSaveParcela(item, { valor: parsed });
+    if (!ok) setValorVal(formatEditableBrl(item.valor));
+  };
+
+  const commitStatus = async (nextStatus) => {
+    const prev = statusVal;
+    setStatusVal(nextStatus);
+    if (nextStatus === item.status) return;
+    const ok = await onSaveParcela(item, { status: nextStatus });
+    if (!ok) setStatusVal(prev);
+  };
+
+  return (
+    <tr
+      data-testid={`launch-row-${item.lancamento_id}-${item.numero}`}
+      className={savedHighlight ? 'sheet-row--saved' : ''}
+    >
+      {/* Data */}
+      <td className="w-[8.6rem]">
+        <input
+          type="date"
+          aria-label={`Data de ${item.descricao}`}
+          data-testid={`cell-date-${item.lancamento_id}-${item.numero}`}
+          className="sheet-cell-input font-mono text-xs"
+          value={dataVal}
+          onFocus={() => { focusedFieldRef.current = 'data'; }}
+          onBlur={() => { focusedFieldRef.current = null; }}
+          onChange={(e) => commitData(e.target.value)}
+        />
+      </td>
+
+      {/* Descrição */}
+      <td className="min-w-[14rem]">
+        <input
+          type="text"
+          aria-label={`Descrição do lançamento ${item.lancamento_id}`}
+          data-testid={`cell-desc-${item.lancamento_id}-${item.numero}`}
+          className="sheet-cell-input font-semibold"
+          value={descVal}
+          onFocus={() => { focusedFieldRef.current = 'descricao'; }}
+          onChange={(e) => setDescVal(e.target.value)}
+          onBlur={commitDescricao}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.currentTarget.blur();
+            } else if (e.key === 'Escape') {
+              setDescVal(item.descricao || '');
+              focusedFieldRef.current = null;
+              e.currentTarget.blur();
+            }
+          }}
+        />
+      </td>
+
+      {/* Cartão / Origem */}
+      <td className="min-w-[12.5rem]">
+        <div className="flex items-center gap-1.5 pl-1">
+          {cardDotColor ? (
+            <span
+              className="w-2.5 h-2.5 rounded-full shrink-0"
+              style={{ backgroundColor: cardDotColor }}
+              title="Cor do cartão"
+            />
+          ) : (
+            <span className="w-2.5 h-2.5 rounded-full shrink-0 bg-slate-400/60" />
+          )}
+          <select
+            aria-label={`Cartão ou origem de ${item.descricao}`}
+            data-testid={`cell-origin-${item.lancamento_id}-${item.numero}`}
+            className="sheet-cell-select text-xs font-medium"
+            value={originVal}
+            onFocus={() => { focusedFieldRef.current = 'origin'; }}
+            onBlur={() => { focusedFieldRef.current = null; }}
+            onChange={(e) => commitOrigin(e.target.value)}
+          >
+            {cartoes.length > 0 && (
+              <optgroup label="Cartões de Crédito">
+                {cartoes.map((c) => (
+                  <option key={c.id} value={`card:${c.id}`}>
+                    💳 {c.nome}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+            {cardMissingFromList && (
+              <option value={`card:${item.cartao_id}`}>💳 {item.cartao || `Cartão #${item.cartao_id}`}</option>
+            )}
+            {contas.length > 0 && (
+              <optgroup label="Contas Bancárias">
+                {contas.map((ct) => (
+                  <option key={ct.id} value={`account:${ct.id}`}>
+                    🏦 {ct.nome}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+            {contaMissingFromList && (
+              <option value={`account:${item.conta_id}`}>🏦 {item.conta || `Conta #${item.conta_id}`}</option>
+            )}
+            <option value="cash">💵 Dinheiro / Sem cartão</option>
+          </select>
+        </div>
+      </td>
+
+      {/* Parcela */}
+      <td className="w-[6.4rem] text-center">
+        <div className="flex flex-col items-center gap-0.5">
+          <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-bold bg-[var(--accent-tint)] text-blue-500">
+            {item.parcela}
+          </span>
+          {item.tipo === 'compra_para_mim' && (
+            <span className="text-[9px] font-bold text-emerald-500 uppercase">Abatimento</span>
+          )}
+          {item.tipo === 'reembolso_pessoa' && (
+            <span className="text-[9px] font-bold text-amber-500 uppercase">Reembolso</span>
+          )}
+        </div>
+      </td>
+
+      {/* Valor (R$) */}
+      <td className="w-[8.2rem]">
+        <input
+          type="text"
+          inputMode="decimal"
+          aria-label={`Valor de ${item.descricao}`}
+          data-testid={`cell-valor-${item.lancamento_id}-${item.numero}`}
+          className="sheet-cell-input sheet-cell-input--money"
+          value={valorVal}
+          onFocus={(e) => {
+            focusedFieldRef.current = 'valor';
+            e.target.select();
+          }}
+          onChange={(e) => setValorVal(e.target.value)}
+          onBlur={commitValor}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.currentTarget.blur();
+            } else if (e.key === 'Escape') {
+              setValorVal(formatEditableBrl(item.valor));
+              focusedFieldRef.current = null;
+              e.currentTarget.blur();
+            }
+          }}
+        />
+      </td>
+
+      {/* Status */}
+      <td className="w-[7.5rem]">
+        <select
+          aria-label={`Status de ${item.descricao}`}
+          data-testid={`cell-status-${item.lancamento_id}-${item.numero}`}
+          className={`sheet-cell-select text-xs font-extrabold text-center rounded-full cursor-pointer ${
+            statusVal === 'pago'
+              ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
+              : 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30'
+          }`}
+          value={statusVal}
+          onFocus={() => { focusedFieldRef.current = 'status'; }}
+          onBlur={() => { focusedFieldRef.current = null; }}
+          onChange={(e) => commitStatus(e.target.value)}
+        >
+          <option value="pendente">Pendente</option>
+          <option value="pago">Pago</option>
+        </select>
+      </td>
+
+      {/* Excluir */}
+      <td className="w-[3.4rem] text-center">
+        <button
+          type="button"
+          data-testid={`cell-delete-${item.lancamento_id}-${item.numero}`}
+          onClick={() => onRequestDelete(item)}
+          className="p-1.5 text-[var(--muted)] hover:text-rose-500 hover:bg-rose-500/10 rounded-lg transition-colors"
+          title="Excluir este lançamento ou parcela"
+        >
+          <Trash2 size={15} />
+        </button>
+      </td>
+    </tr>
+  );
+}
+
+/**
+ * Linha "+ Nova Linha" embutida na planilha de lançamentos do mês.
+ */
+function LinhaNovoLancamento({ pessoa, mes, ano, cartoes, contas, onCreated, onError }) {
+  const defaultOrigin = cartoes.length > 0 ? `card:${cartoes[0].id}` : (contas.length > 0 ? `account:${contas[0].id}` : 'cash');
+  const [data, setData] = useState(() => defaultDateForMonth(mes, ano));
+  const [descricao, setDescricao] = useState('');
+  const [origin, setOrigin] = useState(defaultOrigin);
+  const [parcelas, setParcelas] = useState(1);
+  const [valor, setValor] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const descRef = useRef(null);
+
+  useEffect(() => {
+    setData(defaultDateForMonth(mes, ano));
+  }, [mes, ano]);
+
+  useEffect(() => {
+    if (origin === 'cash' && cartoes.length > 0) {
+      setOrigin(`card:${cartoes[0].id}`);
+    }
+  }, [cartoes.length]);
+
+  const isCardOrigin = origin.startsWith('card:');
+
+  const handleAdd = async () => {
+    if (submitting) return;
+    const descLimpa = descricao.trim();
+    if (!descLimpa) {
+      onError('Digite a descrição na nova linha antes de adicionar.');
+      descRef.current?.focus();
+      return;
+    }
+    const valorParsed = parseBrlNumber(valor);
+    if (valorParsed === null) {
+      onError('Informe um valor válido maior que zero na nova linha.');
+      return;
+    }
+    const patch = decodeOriginPatch(origin, 'compra_cartao');
+    if (!patch) {
+      onError('Selecione um cartão ou origem válida.');
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      await lancamentosApi.criar({
+        descricao: descLimpa,
+        tipo: patch.tipo,
+        valor_total: valorParsed,
+        total_parcelas: isCardOrigin ? Math.max(1, Math.min(120, Number(parcelas) || 1)) : 1,
+        data_lancamento: data || defaultDateForMonth(mes, ano),
+        mes_fatura: Number(mes),
+        ano_fatura: Number(ano),
+        cartao_id: patch.cartao_id,
+        conta_id: patch.conta_id,
+        pessoa_id: pessoa.id,
+      });
+      setDescricao('');
+      setValor('');
+      setParcelas(1);
+      await onCreated();
+      descRef.current?.focus();
+    } catch (err) {
+      onError(err?.response?.data?.detail || err.message || 'Erro ao adicionar nova linha.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const onKeyDownSubmit = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleAdd();
+    }
+  };
+
+  return (
+    <tr className="sheet-row--new" data-testid="spreadsheet-new-launch-row">
+      <td>
+        <input
+          type="date"
+          aria-label="Data da nova linha"
+          data-testid="new-launch-date"
+          className="sheet-cell-input font-mono text-xs"
+          value={data}
+          onChange={(e) => setData(e.target.value)}
+        />
+      </td>
+      <td>
+        <input
+          ref={descRef}
+          type="text"
+          aria-label="Descrição da nova linha"
+          data-testid="new-launch-desc"
+          className="sheet-cell-input font-medium"
+          placeholder="+ Nova linha: digite a compra ou gasto..."
+          value={descricao}
+          onChange={(e) => setDescricao(e.target.value)}
+          onKeyDown={onKeyDownSubmit}
+        />
+      </td>
+      <td>
+        <select
+          aria-label="Cartão ou origem da nova linha"
+          data-testid="new-launch-origin"
+          className="sheet-cell-select text-xs font-medium"
+          value={origin}
+          onChange={(e) => setOrigin(e.target.value)}
+        >
+          {cartoes.length > 0 && (
+            <optgroup label="Cartões de Crédito">
+              {cartoes.map((c) => (
+                <option key={c.id} value={`card:${c.id}`}>💳 {c.nome}</option>
+              ))}
+            </optgroup>
+          )}
+          {contas.length > 0 && (
+            <optgroup label="Contas Bancárias">
+              {contas.map((ct) => (
+                <option key={ct.id} value={`account:${ct.id}`}>🏦 {ct.nome}</option>
+              ))}
+            </optgroup>
+          )}
+          <option value="cash">💵 Dinheiro / Sem cartão</option>
+        </select>
+      </td>
+      <td className="text-center">
+        {isCardOrigin ? (
+          <select
+            aria-label="Número de parcelas"
+            data-testid="new-launch-parcelas"
+            className="sheet-cell-select text-xs font-bold text-center"
+            value={parcelas}
+            onChange={(e) => setParcelas(Number(e.target.value))}
+          >
+            {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 18, 24].map((n) => (
+              <option key={n} value={n}>{n === 1 ? 'À vista' : `${n}x`}</option>
+            ))}
+          </select>
+        ) : (
+          <span className="text-[11px] text-[var(--muted)] font-semibold">À vista</span>
+        )}
+      </td>
+      <td>
+        <input
+          type="text"
+          inputMode="decimal"
+          aria-label="Valor da nova linha"
+          data-testid="new-launch-valor"
+          className="sheet-cell-input sheet-cell-input--money"
+          placeholder="0,00"
+          value={valor}
+          onChange={(e) => setValor(e.target.value)}
+          onKeyDown={onKeyDownSubmit}
+        />
+      </td>
+      <td colSpan={2} className="text-right pr-2">
+        <button
+          type="button"
+          data-testid="new-launch-submit"
+          disabled={submitting}
+          onClick={handleAdd}
+          className="btn-primary w-full py-1.5 px-2.5 text-xs font-bold"
+        >
+          {submitting ? <Loader2 size={13} className="animate-spin" /> : <Plus size={14} />}
+          <span>{submitting ? 'Salvando...' : 'Nova Linha'}</span>
+        </button>
+      </td>
+    </tr>
+  );
+}
+
+/**
+ * Linha inline editável da planilha de Pagamentos Recebidos no mês.
+ */
+function LinhaPagamentoEditavel({
+  pag,
+  contas,
+  savedHighlight,
+  onSavePayment,
+  onValidationError,
+  onDeletePayment,
+}) {
+  const initialForma = pag.forma_codigo || normalizePaymentFormaCode(pag.forma_pagamento, pag.conta_id);
+  const [dataVal, setDataVal] = useState(pag.data || '');
+  const [formaVal, setFormaVal] = useState(initialForma);
+  const [outraFormaVal, setOutraFormaVal] = useState(initialForma === 'outro' ? (pag.forma_pagamento || '') : '');
+  const [contaVal, setContaVal] = useState(pag.conta_id ? String(pag.conta_id) : '');
+  const [valorVal, setValorVal] = useState(formatEditableBrl(pag.valor));
+  const [obsVal, setObsVal] = useState(pag.observacao || '');
+  const focusedRef = useRef(null);
+
+  useEffect(() => {
+    const nextForma = pag.forma_codigo || normalizePaymentFormaCode(pag.forma_pagamento, pag.conta_id);
+    if (focusedRef.current !== 'data') setDataVal(pag.data || '');
+    if (focusedRef.current !== 'forma') setFormaVal(nextForma);
+    if (focusedRef.current !== 'outra_forma') setOutraFormaVal(nextForma === 'outro' ? (pag.forma_pagamento || '') : '');
+    if (focusedRef.current !== 'conta') setContaVal(pag.conta_id ? String(pag.conta_id) : '');
+    if (focusedRef.current !== 'valor') setValorVal(formatEditableBrl(pag.valor));
+    if (focusedRef.current !== 'obs') setObsVal(pag.observacao || '');
+  }, [pag.data, pag.forma_codigo, pag.forma_pagamento, pag.conta_id, pag.valor, pag.observacao]);
+
+  const commitData = async (nextDate) => {
+    setDataVal(nextDate);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(nextDate) || nextDate === pag.data) return;
+    const ok = await onSavePayment(pag, { data: nextDate });
+    if (!ok) setDataVal(pag.data || '');
+  };
+
+  const commitForma = async (nextForma) => {
+    const prevForma = formaVal;
+    const prevConta = contaVal;
+    setFormaVal(nextForma);
+    if (nextForma === 'outro') {
+      const texto = (outraFormaVal || 'Outro').trim();
+      setOutraFormaVal(texto);
+      const ok = await onSavePayment(pag, {
+        forma: 'outro',
+        outra_forma: texto,
+        conta_id: contaVal ? Number(contaVal) : null,
+      });
+      if (!ok) setFormaVal(prevForma);
+      return;
+    }
+    const semConta = nextForma === 'dinheiro' || nextForma === 'abatimento';
+    if (semConta) setContaVal('');
+    const ok = await onSavePayment(pag, {
+      forma: nextForma,
+      conta_id: semConta ? null : (contaVal ? Number(contaVal) : null),
+    });
+    if (!ok) {
+      setFormaVal(prevForma);
+      setContaVal(prevConta);
+    }
+  };
+
+  const commitOutraForma = async () => {
+    focusedRef.current = null;
+    const txt = outraFormaVal.trim();
+    if (!txt) {
+      setOutraFormaVal(pag.forma_pagamento || 'Outro');
+      onValidationError('Informe a forma de pagamento.');
+      return;
+    }
+    if (txt === (pag.forma_pagamento || '').trim()) return;
+    const ok = await onSavePayment(pag, { forma: 'outro', outra_forma: txt });
+    if (!ok) setOutraFormaVal(pag.forma_pagamento || 'Outro');
+  };
+
+  const commitConta = async (nextConta) => {
+    const prev = contaVal;
+    setContaVal(nextConta);
+    const nextId = nextConta ? Number(nextConta) : null;
+    if (nextId === (pag.conta_id ?? null)) return;
+    const ok = await onSavePayment(pag, { conta_id: nextId });
+    if (!ok) setContaVal(prev);
+  };
+
+  const commitValor = async () => {
+    focusedRef.current = null;
+    const parsed = parseBrlNumber(valorVal);
+    if (parsed === null) {
+      setValorVal(formatEditableBrl(pag.valor));
+      onValidationError('Informe um valor de pagamento válido maior que zero.');
+      return;
+    }
+    setValorVal(formatEditableBrl(parsed));
+    if (Math.abs(parsed - Number(pag.valor || 0)) < 0.005) return;
+    const ok = await onSavePayment(pag, { valor: parsed });
+    if (!ok) setValorVal(formatEditableBrl(pag.valor));
+  };
+
+  const commitObs = async () => {
+    focusedRef.current = null;
+    const trimmed = obsVal.trim();
+    if (trimmed === (pag.observacao || '').trim()) return;
+    const ok = await onSavePayment(pag, { observacao: trimmed });
+    if (!ok) setObsVal(pag.observacao || '');
+  };
+
+  const permiteConta = ['pix', 'transferencia', 'outro'].includes(formaVal);
+
+  return (
+    <tr
+      data-testid={`payment-row-${pag.id}`}
+      className={savedHighlight ? 'sheet-row--saved' : ''}
+    >
+      <td className="w-[8.6rem]">
+        <input
+          type="date"
+          aria-label={`Data do pagamento ${pag.id}`}
+          data-testid={`pay-date-${pag.id}`}
+          className="sheet-cell-input font-mono text-xs"
+          value={dataVal}
+          onFocus={() => { focusedRef.current = 'data'; }}
+          onBlur={() => { focusedRef.current = null; }}
+          onChange={(e) => commitData(e.target.value)}
+        />
+      </td>
+
+      <td className="min-w-[14rem]">
+        <div className="flex flex-wrap sm:flex-nowrap items-center gap-1.5">
+          <select
+            aria-label={`Forma do pagamento ${pag.id}`}
+            data-testid={`pay-forma-${pag.id}`}
+            className="sheet-cell-select text-xs font-semibold"
+            value={formaVal}
+            onFocus={() => { focusedRef.current = 'forma'; }}
+            onBlur={() => { focusedRef.current = null; }}
+            onChange={(e) => commitForma(e.target.value)}
+          >
+            {PAYMENT_FORM_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+
+          {formaVal === 'outro' && (
+            <input
+              type="text"
+              aria-label={`Detalhe da forma de pagamento ${pag.id}`}
+              className="sheet-cell-input text-xs max-w-[9rem]"
+              value={outraFormaVal}
+              placeholder="Qual forma?"
+              onFocus={() => { focusedRef.current = 'outra_forma'; }}
+              onChange={(e) => setOutraFormaVal(e.target.value)}
+              onBlur={commitOutraForma}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') e.currentTarget.blur();
+              }}
+            />
+          )}
+
+          {permiteConta && contas.length > 0 && (
+            <select
+              aria-label={`Conta de destino do pagamento ${pag.id}`}
+              data-testid={`pay-conta-${pag.id}`}
+              className="sheet-cell-select text-[11px] text-[var(--muted)] max-w-[11rem]"
+              value={contaVal}
+              onFocus={() => { focusedRef.current = 'conta'; }}
+              onBlur={() => { focusedRef.current = null; }}
+              onChange={(e) => commitConta(e.target.value)}
+            >
+              <option value="">Sem conta</option>
+              {contas.map((c) => (
+                <option key={c.id} value={c.id}>🏦 {c.nome}</option>
+              ))}
+            </select>
+          )}
+        </div>
+      </td>
+
+      <td className="w-[8.6rem]">
+        <input
+          type="text"
+          inputMode="decimal"
+          aria-label={`Valor do pagamento ${pag.id}`}
+          data-testid={`pay-valor-${pag.id}`}
+          className="sheet-cell-input sheet-cell-input--money text-emerald-600 dark:text-emerald-400"
+          value={valorVal}
+          onFocus={(e) => {
+            focusedRef.current = 'valor';
+            e.target.select();
+          }}
+          onChange={(e) => setValorVal(e.target.value)}
+          onBlur={commitValor}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.currentTarget.blur();
+            } else if (e.key === 'Escape') {
+              setValorVal(formatEditableBrl(pag.valor));
+              focusedRef.current = null;
+              e.currentTarget.blur();
+            }
+          }}
+        />
+      </td>
+
+      <td className="min-w-[13rem]">
+        <input
+          type="text"
+          aria-label={`Observação do pagamento ${pag.id}`}
+          data-testid={`pay-obs-${pag.id}`}
+          className="sheet-cell-input text-xs"
+          placeholder="Adicionar observação..."
+          value={obsVal}
+          onFocus={() => { focusedRef.current = 'obs'; }}
+          onChange={(e) => setObsVal(e.target.value)}
+          onBlur={commitObs}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.currentTarget.blur();
+            } else if (e.key === 'Escape') {
+              setObsVal(pag.observacao || '');
+              focusedRef.current = null;
+              e.currentTarget.blur();
+            }
+          }}
+        />
+      </td>
+
+      <td className="w-[3.4rem] text-center">
+        <button
+          type="button"
+          data-testid={`pay-delete-${pag.id}`}
+          onClick={() => onDeletePayment(pag)}
+          className="p-1.5 text-[var(--muted)] hover:text-rose-500 hover:bg-rose-500/10 rounded-lg transition-colors"
+          title="Excluir este pagamento"
+        >
+          <Trash2 size={15} />
+        </button>
+      </td>
+    </tr>
+  );
+}
+
+/**
+ * Linha inline "+ Novo Pagamento" na tabela de pagamentos recebidos.
+ */
+function LinhaNovoPagamento({ pessoa, mes, ano, contas, onCreated, onError }) {
+  const [data, setData] = useState(() => defaultDateForMonth(mes, ano));
+  const [forma, setForma] = useState('pix');
+  const [contaId, setContaId] = useState('');
+  const [valor, setValor] = useState('');
+  const [observacao, setObservacao] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    setData(defaultDateForMonth(mes, ano));
+  }, [mes, ano]);
+
+  const permiteConta = ['pix', 'transferencia', 'outro'].includes(forma);
+
+  const handleAdd = async () => {
+    if (submitting) return;
+    const parsed = parseBrlNumber(valor);
+    if (parsed === null) {
+      onError('Informe um valor válido maior que zero para registrar o pagamento.');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await pessoasApi.registrarPagamento(pessoa.id, {
+        valor: parsed,
+        data: data || defaultDateForMonth(mes, ano),
+        forma,
+        outra_forma: forma === 'outro' ? 'Outro' : null,
+        conta_id: permiteConta && contaId ? Number(contaId) : null,
+        observacao: observacao.trim() || null,
+      });
+      setValor('');
+      setObservacao('');
+      await onCreated();
+    } catch (err) {
+      onError(err?.response?.data?.detail || err.message || 'Erro ao registrar pagamento.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const onKeyDownSubmit = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleAdd();
+    }
+  };
+
+  return (
+    <tr className="sheet-row--new" data-testid="spreadsheet-new-payment-row">
+      <td>
+        <input
+          type="date"
+          aria-label="Data do novo pagamento"
+          data-testid="new-pay-date"
+          className="sheet-cell-input font-mono text-xs"
+          value={data}
+          onChange={(e) => setData(e.target.value)}
+        />
+      </td>
+      <td>
+        <div className="flex flex-wrap sm:flex-nowrap items-center gap-1.5">
+          <select
+            aria-label="Forma do novo pagamento"
+            data-testid="new-pay-forma"
+            className="sheet-cell-select text-xs font-semibold"
+            value={forma}
+            onChange={(e) => {
+              const f = e.target.value;
+              setForma(f);
+              if (f === 'dinheiro' || f === 'abatimento') setContaId('');
+            }}
+          >
+            {PAYMENT_FORM_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+          {permiteConta && contas.length > 0 && (
+            <select
+              aria-label="Conta de destino do novo pagamento"
+              data-testid="new-pay-conta"
+              className="sheet-cell-select text-[11px] max-w-[11rem]"
+              value={contaId}
+              onChange={(e) => setContaId(e.target.value)}
+            >
+              <option value="">Sem conta</option>
+              {contas.map((c) => (
+                <option key={c.id} value={c.id}>🏦 {c.nome}</option>
+              ))}
+            </select>
+          )}
+        </div>
+      </td>
+      <td>
+        <input
+          type="text"
+          inputMode="decimal"
+          aria-label="Valor do novo pagamento"
+          data-testid="new-pay-valor"
+          className="sheet-cell-input sheet-cell-input--money text-emerald-600 dark:text-emerald-400"
+          placeholder="0,00"
+          value={valor}
+          onChange={(e) => setValor(e.target.value)}
+          onKeyDown={onKeyDownSubmit}
+        />
+      </td>
+      <td>
+        <input
+          type="text"
+          aria-label="Observação do novo pagamento"
+          data-testid="new-pay-obs"
+          className="sheet-cell-input text-xs"
+          placeholder="+ Novo pagamento: obs. opcional..."
+          value={observacao}
+          onChange={(e) => setObservacao(e.target.value)}
+          onKeyDown={onKeyDownSubmit}
+        />
+      </td>
+      <td className="text-center">
+        <button
+          type="button"
+          data-testid="new-pay-submit"
+          disabled={submitting}
+          onClick={handleAdd}
+          className="btn-success py-1.5 px-2.5 text-xs font-bold"
+          title="Registrar pagamento nesta linha"
+        >
+          {submitting ? <Loader2 size={13} className="animate-spin" /> : <Plus size={14} />}
+        </button>
+      </td>
+    </tr>
+  );
+}
+
+/**
+ * Planilha Mensal Automática e Inline-Editável aberta ao clicar em uma pessoa.
+ */
+function PlanilhaPessoaMensal({
+  pessoa,
+  cartoes,
+  contas,
+  onRefreshParent,
+  onClose,
+  onDeletedPessoa,
+}) {
   const { usuario } = useAuth();
   const nomeGestor = usuario?.nome || 'Administração Financeira';
-  const [expanded, setExpanded] = useState(false);
+  const hoje = useMemo(() => new Date(), []);
+  const defaultMonthKey = monthKey(hoje.getFullYear(), hoje.getMonth() + 1);
+
   const [extrato, setExtrato] = useState(null);
-  const [loadingExtrato, setLoadingExtrato] = useState(false);
-  const [mesAberto, setMesAberto] = useState(null);
+  const [loadingExtrato, setLoadingExtrato] = useState(true);
+  const [selectedMonthKey, setSelectedMonthKey] = useState(defaultMonthKey);
+  const [saveBanner, setSaveBanner] = useState({ status: 'idle', message: '' });
+  const [savedRowKey, setSavedRowKey] = useState(null);
+
   const [modalPagamento, setModalPagamento] = useState(false);
   const [modalEditar, setModalEditar] = useState(false);
   const [modalLink, setModalLink] = useState(false);
-  const [modalZerar, setModalZerar] = useState(null); // null | { mes?, ano? }
+  const [modalZerar, setModalZerar] = useState(null);
   const [modalConfirmarExclusao, setModalConfirmarExclusao] = useState(false);
-  const [itemExcluindo, setItemExcluindo] = useState(null); // { item, nomeMes }
+  const [itemExcluindo, setItemExcluindo] = useState(null);
   const [enviandoWhats, setEnviandoWhats] = useState(false);
   const [gerandoPdf, setGerandoPdf] = useState(false);
 
-  const carregarExtrato = async (forcar = false) => {
-    if (extrato && !forcar) return;
-    setLoadingExtrato(true);
+  const requestIdRef = useRef(0);
+  const inFlightSavesRef = useRef(0);
+  const savedTimerRef = useRef(null);
+  const rowFlashTimerRef = useRef(null);
+
+  const carregarExtrato = async ({ mes, ano, silent = false } = {}) => {
+    const reqId = ++requestIdRef.current;
+    if (!silent) setLoadingExtrato(true);
     try {
-      const res = await pessoasApi.extrato(pessoa.id);
-      const novoExtrato = res.data;
-      setExtrato(novoExtrato);
-      const hist = novoExtrato?.historico || [];
-      const atualObj = hist.find((h) => h.is_atual) || hist[0];
-      const chavePadrao = atualObj ? `${atualObj.ano}-${atualObj.mes}` : null;
-      setMesAberto((prev) => {
-        if (prev && hist.some((h) => `${h.ano}-${h.mes}` === prev)) {
-          return prev;
-        }
-        return chavePadrao;
-      });
+      const params = mes && ano ? { mes, ano } : undefined;
+      const res = await pessoasApi.extrato(pessoa.id, params);
+      if (reqId !== requestIdRef.current) return null;
+      setExtrato(res.data);
+      return res.data;
     } catch (e) {
-      console.error(e);
+      if (reqId === requestIdRef.current) {
+        setSaveBanner({
+          status: 'error',
+          message: e?.response?.data?.detail || 'Erro ao carregar planilha da pessoa.',
+        });
+      }
+      return null;
     } finally {
-      setLoadingExtrato(false);
+      if (reqId === requestIdRef.current) {
+        setLoadingExtrato(false);
+      }
     }
+  };
+
+  // Ao trocar de pessoa, abre automaticamente a planilha no mês atual
+  useEffect(() => {
+    const curKey = monthKey(new Date().getFullYear(), new Date().getMonth() + 1);
+    setSelectedMonthKey(curKey);
+    setExtrato(null);
+    setSaveBanner({ status: 'idle', message: '' });
+    carregarExtrato({ silent: false });
+
+    return () => {
+      if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+      if (rowFlashTimerRef.current) clearTimeout(rowFlashTimerRef.current);
+    };
+  }, [pessoa.id]);
+
+  const monthTabs = useMemo(
+    () => buildMonthTabs(extrato?.historico || [], selectedMonthKey, new Date()),
+    [extrato, selectedMonthKey]
+  );
+
+  const activeMonthCoords = useMemo(() => {
+    return parseMonthKey(selectedMonthKey) || {
+      ano: new Date().getFullYear(),
+      mes: new Date().getMonth() + 1,
+    };
+  }, [selectedMonthKey]);
+
+  const activeMonthData = useMemo(() => {
+    const hist = extrato?.historico || [];
+    const found = hist.find(
+      (h) => h.ano === activeMonthCoords.ano && h.mes === activeMonthCoords.mes
+    );
+    if (found) return found;
+    return {
+      mes: activeMonthCoords.mes,
+      ano: activeMonthCoords.ano,
+      nome_mes: `${MESES_NOMES[activeMonthCoords.mes - 1].slice(0, 3)}/${activeMonthCoords.ano}`,
+      is_atual: (
+        activeMonthCoords.mes === new Date().getMonth() + 1
+        && activeMonthCoords.ano === new Date().getFullYear()
+      ),
+      saldo_anterior: 0,
+      total_gastos: 0,
+      total_compras_para_mim: 0,
+      total_reembolsos: 0,
+      total_parcelas_pagas_mes: 0,
+      total_a_pagar: 0,
+      total_pagamentos: 0,
+      saldo_devedor: 0,
+      credito_a_favor: 0,
+      lancamentos: [],
+      pagamentos: [],
+    };
+  }, [extrato, activeMonthCoords]);
+
+  const handleSelectMonth = async (ano, mes) => {
+    const nextKey = monthKey(ano, mes);
+    setSelectedMonthKey(nextKey);
+    const jaTemNoHistorico = (extrato?.historico || []).some(
+      (h) => h.ano === ano && h.mes === mes
+    );
+    if (!jaTemNoHistorico) {
+      await carregarExtrato({ mes, ano, silent: false });
+    }
+  };
+
+  const flashRow = (rowKey) => {
+    if (rowFlashTimerRef.current) clearTimeout(rowFlashTimerRef.current);
+    setSavedRowKey(rowKey);
+    rowFlashTimerRef.current = setTimeout(() => setSavedRowKey(null), 1600);
+  };
+
+  const markSaved = () => {
+    if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+    setSaveBanner({ status: 'saved', message: '✓ Salvo' });
+    savedTimerRef.current = setTimeout(() => {
+      setSaveBanner((prev) => (prev.status === 'saved' ? { status: 'idle', message: '' } : prev));
+    }, 3500);
+  };
+
+  const runAutoSave = async (rowKey, mutationFn) => {
+    inFlightSavesRef.current += 1;
+    setSaveBanner({ status: 'saving', message: 'Salvando...' });
+    let failed = false;
+    try {
+      await mutationFn();
+      const { ano, mes } = activeMonthCoords;
+      await Promise.all([
+        carregarExtrato({ mes, ano, silent: true }),
+        onRefreshParent({ silent: true }),
+      ]);
+      if (rowKey) flashRow(rowKey);
+      return true;
+    } catch (err) {
+      failed = true;
+      const msg = err?.response?.data?.detail || err.message || 'Erro ao salvar alteração.';
+      setSaveBanner({ status: 'error', message: msg });
+      return false;
+    } finally {
+      inFlightSavesRef.current = Math.max(0, inFlightSavesRef.current - 1);
+      if (!failed && inFlightSavesRef.current === 0) {
+        setSaveBanner((prev) => (prev.status === 'error' ? prev : { status: 'saved', message: '✓ Salvo' }));
+        if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+        savedTimerRef.current = setTimeout(() => {
+          setSaveBanner((prev) => (prev.status === 'saved' ? { status: 'idle', message: '' } : prev));
+        }, 3500);
+      }
+    }
+  };
+
+  const handleSaveLaunch = (item, payload) =>
+    runAutoSave(`launch-${item.lancamento_id}-${item.numero}`, () =>
+      lancamentosApi.atualizar(item.lancamento_id, payload)
+    );
+
+  const handleSaveParcela = (item, payload) =>
+    runAutoSave(`launch-${item.lancamento_id}-${item.numero}`, () =>
+      lancamentosApi.atualizarParcela(item.lancamento_id, item.numero, payload)
+    );
+
+  const handleSavePayment = (pag, payload) =>
+    runAutoSave(`pay-${pag.id}`, () =>
+      pessoasApi.atualizarPagamento(pessoa.id, pag.id, payload)
+    );
+
+  const handleValidationError = (msg) => {
+    setSaveBanner({ status: 'error', message: msg });
   };
 
   const recarregarTudo = async () => {
-    await carregarExtrato(true);
-    onRefresh();
-  };
-
-  const handleToggle = () => {
-    if (modoInativas) return;
-    if (!expanded) carregarExtrato();
-    setExpanded(!expanded);
-  };
-
-  const handleRestaurar = async (e) => {
-    e.stopPropagation();
-    try {
-      await pessoasApi.restaurar(pessoa.id);
-      onRefresh();
-    } catch (err) {
-      alert('Erro ao restaurar pessoa: ' + (err.response?.data?.detail || err.message));
-    }
+    const { ano, mes } = activeMonthCoords;
+    await Promise.all([
+      carregarExtrato({ mes, ano, silent: true }),
+      onRefreshParent({ silent: true }),
+    ]);
+    markSaved();
   };
 
   const handleDeletarPagamento = async (pag) => {
     if (!window.confirm(`Excluir o pagamento recebido de ${fmt(pag.valor)}?`)) return;
-    try {
-      await pessoasApi.deletarPagamento(pessoa.id, pag.id);
-      await recarregarTudo();
-    } catch (err) {
-      alert('Erro ao excluir pagamento: ' + (err.response?.data?.detail || err.message));
-    }
+    await runAutoSave(null, () => pessoasApi.deletarPagamento(pessoa.id, pag.id));
   };
 
   const handleDownloadPDF = async (mes, ano) => {
@@ -946,7 +1886,7 @@ function CardPessoa({ pessoa, contas, onRefresh, modoInativas = false }) {
       const url = pessoasApi.gerarPDFUrl(pessoa.id, mes, ano);
       const token = localStorage.getItem('token');
       const response = await fetch(url, {
-        headers: { Authorization: `Bearer ${token}` }
+        headers: { Authorization: `Bearer ${token}` },
       });
       if (!response.ok) throw new Error('Falha ao gerar PDF no backend.');
       const blob = await response.blob();
@@ -1038,11 +1978,11 @@ function CardPessoa({ pessoa, contas, onRefresh, modoInativas = false }) {
       try {
         const resEnvio = await whatsappApi.sendPdf({
           telefone: telefone || pessoa.telefone,
-          pdf_path: pdf_path,
+          pdf_path,
           pdfPath: pdf_path,
           nome_pessoa: pessoa.nome,
           mes_ano: nomeMes,
-          mensagem: msgTexto
+          mensagem: msgTexto,
         });
 
         if (resEnvio.data?.success) {
@@ -1050,7 +1990,7 @@ function CardPessoa({ pessoa, contas, onRefresh, modoInativas = false }) {
           setEnviandoWhats(false);
           return;
         }
-      } catch (whatsErr) {
+      } catch {
         if (numLimpo) {
           window.open(`https://wa.me/${telefoneFinal}?text=${encodeURIComponent(msgTexto)}`, '_blank');
         } else {
@@ -1068,361 +2008,507 @@ function CardPessoa({ pessoa, contas, onRefresh, modoInativas = false }) {
     }
   };
 
+  const anosDisponiveis = useMemo(() => {
+    const curAno = new Date().getFullYear();
+    const setAnos = new Set([curAno - 1, curAno, curAno + 1, activeMonthCoords.ano]);
+    for (const h of extrato?.historico || []) setAnos.add(h.ano);
+    return Array.from(setAnos).sort((a, b) => a - b);
+  }, [extrato, activeMonthCoords.ano]);
+
+  const h = activeMonthData;
+  const fullMonthLabel = `${MESES_NOMES[h.mes - 1]} / ${h.ano}`;
+
   return (
-    <div className="card p-0 overflow-hidden shadow-sm hover:shadow-md transition-shadow">
-      {/* Cabeçalho da Pessoa */}
-      <div
-        className="p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 cursor-pointer hover-surface transition-colors"
-        onClick={handleToggle}
-      >
-        <div className="flex items-center gap-4">
-          <Avatar nome={pessoa.nome} foto={pessoa.foto_path} cor={pessoa.cor} className="avatar--person" />
-          <div>
+    <section
+      data-testid="person-spreadsheet"
+      aria-label={`Planilha mensal de ${pessoa.nome}`}
+      className="card p-0 overflow-hidden border-2 border-blue-500/35 shadow-lg"
+    >
+      {/* Cabeçalho da Planilha da Pessoa */}
+      <div className="p-4 sm:p-5 bg-[var(--surface)] border-b border-[var(--line)] flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3.5 min-w-0">
+          <Avatar nome={pessoa.nome} foto={pessoa.foto_path} cor={pessoa.cor} className="avatar--person shrink-0" />
+          <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
-              <h3 className="font-extrabold text-[var(--ink)] text-lg">{pessoa.nome}</h3>
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-blue-500/15 text-blue-500">
+                <Table2 size={12} /> Planilha Editável
+              </span>
+              <h2 className="font-extrabold text-[var(--ink)] text-lg sm:text-xl truncate">{pessoa.nome}</h2>
               {pessoa.telefone && (
                 <span className="text-xs text-[var(--muted)] font-mono">📱 {pessoa.telefone}</span>
               )}
             </div>
             <p className="text-xs text-[var(--muted)] mt-0.5">
-              {modoInativas
-                ? 'Cadastro arquivado — clique em Restaurar para reativar'
-                : `Gastos neste mês: ${fmt(pessoa.total_gastos_mes)}`}
+              Clique em qualquer célula para editar — o sistema salva automaticamente e atualiza todo o painel.
             </p>
           </div>
         </div>
 
-        <div className="flex items-center justify-between sm:justify-end gap-3 flex-wrap">
-          {!modoInativas && (
-            <div className="text-right">
-              <span className="text-xs text-[var(--muted)] font-medium block">Situação Atual</span>
-              {pessoa.saldo_devedor > 0 ? (
-                <span className="badge-red text-sm py-1 px-3">Deve {fmt(pessoa.saldo_devedor)}</span>
-              ) : pessoa.credito_a_favor > 0 ? (
-                <span className="badge-blue text-sm py-1 px-3">Crédito {fmt(pessoa.credito_a_favor)}</span>
-              ) : (
-                <span className="badge-green text-sm py-1 px-3">Quitado ✓</span>
-              )}
-            </div>
-          )}
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Indicador de Auto-Save da Planilha */}
+          <span
+            data-testid="spreadsheet-save-status"
+            role="status"
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border transition-all ${
+              saveBanner.status === 'saving'
+                ? 'bg-blue-500/15 text-blue-500 border-blue-500/30'
+                : saveBanner.status === 'saved'
+                  ? 'bg-emerald-500/15 text-emerald-500 border-emerald-500/35'
+                  : saveBanner.status === 'error'
+                    ? 'bg-rose-500/15 text-rose-500 border-rose-500/35'
+                    : 'bg-[var(--raised)] text-[var(--muted)] border-[var(--line)]'
+            }`}
+          >
+            {saveBanner.status === 'saving' ? (
+              <>
+                <Loader2 size={13} className="animate-spin shrink-0" />
+                <span>Salvando...</span>
+              </>
+            ) : saveBanner.status === 'saved' ? (
+              <>
+                <Check size={14} className="shrink-0" />
+                <span>✓ Salvo</span>
+              </>
+            ) : saveBanner.status === 'error' ? (
+              <>
+                <AlertTriangle size={13} className="shrink-0" />
+                <span className="max-w-[220px] truncate">{saveBanner.message}</span>
+              </>
+            ) : (
+              <>
+                <CheckCircle size={13} className="text-emerald-500 shrink-0" />
+                <span>Auto-save ativo</span>
+              </>
+            )}
+          </span>
 
-          {modoInativas ? (
+          {pessoa.token_acesso && (
             <button
               type="button"
-              onClick={handleRestaurar}
-              className="btn-success text-xs py-2 px-3.5 font-bold flex items-center gap-1.5"
+              onClick={() => setModalLink(true)}
+              className="btn-secondary text-xs py-1.5 px-2.5 text-blue-500"
+              title="Abrir Link de Celular e WhatsApp"
             >
-              <RotateCcw size={15} />
-              <span>Restaurar Pessoa</span>
+              <Link2 size={14} /> <span className="hidden sm:inline">Link</span>
             </button>
-          ) : (
-            <div className="flex items-center gap-1 border-l pl-3 ml-1 border-[var(--line)]">
-              {pessoa.token_acesso && (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setModalLink(true);
-                  }}
-                  className="p-2 text-blue-500 hover:text-blue-400 hover:bg-blue-500/10 rounded-xl transition-colors"
-                  title="Abrir Link de Celular e WhatsApp"
-                >
-                  <Link2 size={16} />
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setModalZerar({});
-                }}
-                className="p-2 text-amber-500 hover:text-amber-400 hover:bg-amber-500/10 rounded-xl transition-colors"
-                title="Zerar Gastos / Limpar Dívida (sem excluir a pessoa)"
-              >
-                <Eraser size={16} />
-              </button>
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); setModalEditar(true); }}
-                className="p-2 text-[var(--muted)] hover:text-blue-500 hover:bg-[var(--accent-tint)] rounded-xl transition-colors"
-                title="Editar Pessoa"
-              >
-                <Edit2 size={16} />
-              </button>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setModalConfirmarExclusao(true);
-                }}
-                className="p-2 text-[var(--muted)] hover:text-rose-500 hover:bg-rose-500/10 rounded-xl transition-colors"
-                title="Opções de Remoção / Zerar Gastos"
-              >
-                <Trash2 size={16} />
-              </button>
-            </div>
           )}
-
-          {!modoInativas && (
-            <div className="p-2 text-[var(--muted)] hover:text-[var(--ink)]">
-              {expanded ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
-            </div>
-          )}
+          <button
+            type="button"
+            onClick={() => setModalEditar(true)}
+            className="btn-secondary text-xs py-1.5 px-2.5"
+            title="Editar Pessoa"
+          >
+            <Edit2 size={14} /> <span className="hidden sm:inline">Editar</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setModalConfirmarExclusao(true)}
+            className="btn-secondary text-xs py-1.5 px-2.5 text-rose-500 hover:bg-rose-500/10"
+            title="Opções de Remoção / Zerar"
+          >
+            <Trash2 size={14} />
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="btn-secondary text-xs py-1.5 px-2.5"
+            title="Fechar planilha"
+            aria-label="Fechar planilha"
+          >
+            <X size={15} />
+          </button>
         </div>
       </div>
 
-      {/* Extrato Detalhado */}
-      {expanded && !modoInativas && (
-        <div className="border-t border-[var(--line)] bg-[var(--canvas)]">
-          <div className="p-4 bg-[var(--surface)] border-b border-[var(--line)] flex flex-wrap items-center justify-between gap-2">
-            <span className="text-xs font-bold text-[var(--muted)] uppercase tracking-wider">Histórico Mensal de Fechamentos</span>
-            <div className="flex flex-wrap items-center gap-2">
+      {/* Barra de Abas de Meses (Excel Sheet Tabs) */}
+      <div className="px-4 sm:px-5 py-3 bg-[var(--raised)] border-b border-[var(--line)] flex flex-wrap items-center justify-between gap-3">
+        <div
+          className="sheet-month-tabs flex-1 min-w-0"
+          role="tablist"
+          aria-label="Meses da planilha"
+          data-testid="spreadsheet-month-tabs"
+        >
+          <button
+            type="button"
+            onClick={() => {
+              const prev = shiftMonth(activeMonthCoords.ano, activeMonthCoords.mes, -1);
+              handleSelectMonth(prev.ano, prev.mes);
+            }}
+            className="sheet-month-tab px-2"
+            title="Mês anterior"
+            aria-label="Mês anterior"
+          >
+            <ChevronLeft size={15} />
+          </button>
+
+          {monthTabs.map((tab) => {
+            const isSelected = tab.key === selectedMonthKey;
+            return (
+              <button
+                key={tab.key}
+                type="button"
+                role="tab"
+                aria-selected={isSelected}
+                data-testid={`month-tab-${tab.ano}-${tab.mes}`}
+                onClick={() => handleSelectMonth(tab.ano, tab.mes)}
+                className={`sheet-month-tab ${isSelected ? 'sheet-month-tab--active' : ''}`}
+              >
+                <span>{tab.label}</span>
+                {tab.isAtual && (
+                  <span
+                    className={`px-1.5 py-0.2 rounded text-[9px] font-black uppercase ${
+                      isSelected ? 'bg-white/25 text-current' : 'bg-blue-500/15 text-blue-500'
+                    }`}
+                  >
+                    Atual
+                  </span>
+                )}
+                {tab.hasServerData && tab.saldoDevedor > 0 && (
+                  <span
+                    className={`w-2 h-2 rounded-full ${isSelected ? 'bg-rose-200' : 'bg-rose-500'}`}
+                    title={`Pendente: ${fmt(tab.saldoDevedor)}`}
+                  />
+                )}
+              </button>
+            );
+          })}
+
+          <button
+            type="button"
+            onClick={() => {
+              const next = shiftMonth(activeMonthCoords.ano, activeMonthCoords.mes, 1);
+              handleSelectMonth(next.ano, next.mes);
+            }}
+            className="sheet-month-tab px-2"
+            title="Próximo mês"
+            aria-label="Próximo mês"
+          >
+            <ChevronRight size={15} />
+          </button>
+        </div>
+
+        {/* Seletor rápido de qualquer Mês/Ano */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          <select
+            aria-label="Escolher mês"
+            data-testid="month-jump-select"
+            className="input py-1 px-2 text-xs font-bold w-auto min-h-0 h-8"
+            value={activeMonthCoords.mes}
+            onChange={(e) => handleSelectMonth(activeMonthCoords.ano, Number(e.target.value))}
+          >
+            {MESES_NOMES.map((mNome, idx) => (
+              <option key={idx + 1} value={idx + 1}>{mNome}</option>
+            ))}
+          </select>
+          <select
+            aria-label="Escolher ano"
+            data-testid="year-jump-select"
+            className="input py-1 px-2 text-xs font-bold w-auto min-h-0 h-8"
+            value={activeMonthCoords.ano}
+            onChange={(e) => handleSelectMonth(Number(e.target.value), activeMonthCoords.mes)}
+          >
+            {anosDisponiveis.map((a) => (
+              <option key={a} value={a}>{a}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {/* Corpo da Planilha do Mês Selecionado */}
+      {loadingExtrato && !extrato ? (
+        <div className="p-10 text-center text-[var(--muted)] text-sm flex items-center justify-center gap-2">
+          <Loader2 size={18} className="animate-spin text-blue-500" />
+          <span>Carregando planilha de {pessoa.nome}...</span>
+        </div>
+      ) : (
+        <div className="p-4 sm:p-5 bg-[var(--canvas)] space-y-5">
+          {/* Faixa de KPIs do Mês + Ações Rápidas */}
+          <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3">
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 flex-1">
+              <div className="bg-[var(--surface)] px-3.5 py-2.5 rounded-xl border border-[var(--line)]">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--muted)] block">
+                  Dívida Mês Anterior
+                </span>
+                <span
+                  data-testid="kpi-saldo-anterior"
+                  className={`text-base font-extrabold tabular-nums ${
+                    h.saldo_anterior > 0
+                      ? 'text-rose-500'
+                      : h.saldo_anterior < 0
+                        ? 'text-blue-500'
+                        : 'text-[var(--muted)]'
+                  }`}
+                >
+                  {fmt(h.saldo_anterior)}
+                </span>
+              </div>
+
+              <div className="bg-[var(--surface)] px-3.5 py-2.5 rounded-xl border border-[var(--line)]">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--muted)] block">
+                  Compras / Parcelas ({h.nome_mes})
+                </span>
+                <span data-testid="kpi-total-gastos" className="text-base font-extrabold text-[var(--ink)] tabular-nums">
+                  {fmt(h.total_gastos)}
+                </span>
+                {h.total_compras_para_mim > 0 && (
+                  <span className="block text-[10px] font-semibold text-emerald-500">
+                    Abatimentos: -{fmt(h.total_compras_para_mim)}
+                  </span>
+                )}
+              </div>
+
+              <div className="bg-[var(--surface)] px-3.5 py-2.5 rounded-xl border border-[var(--line)]">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--muted)] block">
+                  Pagamentos Recebidos
+                </span>
+                <span data-testid="kpi-total-pagamentos" className="text-base font-extrabold text-emerald-500 tabular-nums">
+                  {fmt(h.total_pagamentos)}
+                </span>
+                {h.total_parcelas_pagas_mes > 0 && (
+                  <span className="block text-[10px] font-semibold text-emerald-500">
+                    Marcado pago: {fmt(h.total_parcelas_pagas_mes)}
+                  </span>
+                )}
+              </div>
+
+              <div
+                className={`px-3.5 py-2.5 rounded-xl border ${
+                  h.saldo_devedor > 0
+                    ? 'bg-rose-500/10 border-rose-500/30'
+                    : h.credito_a_favor > 0
+                      ? 'bg-blue-500/10 border-blue-500/30'
+                      : 'bg-emerald-500/10 border-emerald-500/30'
+                }`}
+              >
+                <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--muted)] block">
+                  {h.credito_a_favor > 0 ? 'Crédito a Favor' : 'Saldo Pendente'}
+                </span>
+                <span
+                  data-testid="kpi-saldo-pendente"
+                  className={`text-base font-black tabular-nums ${
+                    h.saldo_devedor > 0
+                      ? 'text-rose-500'
+                      : h.credito_a_favor > 0
+                        ? 'text-blue-500'
+                        : 'text-emerald-500'
+                  }`}
+                >
+                  {h.saldo_devedor > 0
+                    ? fmt(h.saldo_devedor)
+                    : h.credito_a_favor > 0
+                      ? fmt(h.credito_a_favor)
+                      : 'Quitado ✓'}
+                </span>
+              </div>
+            </div>
+
+            {/* Ações rápidas do mês */}
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
               <button
                 type="button"
-                onClick={() => setModalZerar({})}
-                className="btn-secondary text-xs py-1.5 px-3 text-amber-500 border-amber-500/30 hover:bg-amber-500/10"
-                title="Limpar gastos ou zerar dívida mantendo o cadastro da pessoa"
+                onClick={() => handleDownloadPDF(h.mes, h.ano)}
+                disabled={gerandoPdf}
+                className="btn-secondary text-xs py-2 px-3 font-bold"
+                title={`Baixar PDF de ${fullMonthLabel}`}
               >
-                <Eraser size={14} /> Zerar Gastos / Dívida
+                <Download size={14} /> PDF
               </button>
+
+              <button
+                type="button"
+                onClick={() => handleEnviarWhatsApp(h.mes, h.ano, h.nome_mes, h)}
+                disabled={enviandoWhats}
+                className="btn-success text-xs py-2 px-3 font-bold"
+                title={`Enviar ${fullMonthLabel} pelo WhatsApp`}
+              >
+                <MessageCircle size={14} /> {enviandoWhats ? 'Enviando...' : 'WhatsApp'}
+              </button>
+
+              <button
+                type="button"
+                onClick={() =>
+                  setModalZerar({
+                    mes: h.mes,
+                    ano: h.ano,
+                    temLancamentos: h.lancamentos.length > 0 || h.pagamentos.length > 0,
+                    saldoDevedor: h.saldo_devedor || 0,
+                  })
+                }
+                className="btn-secondary text-xs py-2 px-3 font-bold text-amber-500 border-amber-500/30 hover:bg-amber-500/10"
+                title={`Zerar gastos ou dívida de ${fullMonthLabel}`}
+              >
+                <Eraser size={14} /> Zerar
+              </button>
+
               <button
                 type="button"
                 onClick={() => setModalPagamento(true)}
-                className="btn-success text-xs py-1.5 px-3"
+                className="btn-primary text-xs py-2 px-3 font-bold"
               >
                 <DollarSign size={14} /> Registrar Pagamento
               </button>
             </div>
           </div>
 
-          {loadingExtrato ? (
-            <div className="p-8 text-center text-[var(--muted)] text-sm">Carregando extrato de {pessoa.nome}...</div>
-          ) : extrato ? (
-            <div className="divide-y divide-[var(--line)]">
-              {extrato.historico.map((h) => {
-                const chaveMes = `${h.ano}-${h.mes}`;
-                const isSelected = mesAberto === chaveMes;
-                return (
-                  <div key={chaveMes} className={`transition-all ${isSelected ? 'bg-blue-950/20 border-y border-blue-500/40 shadow-inner' : 'bg-[var(--surface)]'}`}>
-                    {/* Linha do Mês */}
-                    <div
-                      className={`p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 cursor-pointer transition-all border-l-4 ${
-                        isSelected
-                          ? 'border-l-blue-500 bg-blue-500/15'
-                          : h.is_atual
-                            ? 'border-l-blue-400/50 bg-[var(--accent-tint)] hover-surface'
-                            : 'border-l-transparent hover-surface'
-                      }`}
-                      onClick={() => setMesAberto(isSelected ? null : chaveMes)}
-                    >
-                      <div className="flex items-center gap-3 flex-wrap">
-                        <span className={`font-black text-sm tracking-tight transition-colors ${
-                          isSelected ? 'text-blue-400 text-base scale-105 origin-left' : 'text-[var(--ink)]'
-                        }`}>
-                          {h.nome_mes}
-                        </span>
-
-                        {isSelected ? (
-                          <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-blue-600 text-white flex items-center gap-1.5 shadow-md ring-2 ring-blue-400/40">
-                            <span className="w-2 h-2 rounded-full bg-white animate-pulse"></span>
-                            Visualizando
-                          </span>
-                        ) : h.is_atual ? (
-                          <span className="badge-blue text-[10px]">Mês Atual</span>
-                        ) : h.is_passado ? (
-                          <span className="text-[var(--muted)] text-[11px]">Histórico</span>
-                        ) : null}
-                      </div>
-
-                      <div className="flex items-center justify-between sm:justify-end gap-4">
-                        <div className="text-right">
-                          {h.saldo_devedor > 0 ? (
-                            <span className="text-rose-500 font-black text-sm">Pendente: {fmt(h.saldo_devedor)}</span>
-                          ) : h.credito_a_favor > 0 ? (
-                            <span className="text-blue-400 font-extrabold text-xs">Crédito: {fmt(h.credito_a_favor)}</span>
-                          ) : (
-                            <span className="text-emerald-500 font-extrabold text-xs">Quitado ✓</span>
-                          )}
-                        </div>
-
-                        {/* Botões de PDF e WhatsApp */}
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={(e) => { e.stopPropagation(); handleDownloadPDF(h.mes, h.ano); }}
-                            disabled={gerandoPdf}
-                            className="btn-secondary text-xs py-1 px-2.5"
-                            title="Baixar PDF de Fechamento"
-                          >
-                            <Download size={13} /> PDF
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={(e) => { e.stopPropagation(); handleEnviarWhatsApp(h.mes, h.ano, h.nome_mes, h); }}
-                            disabled={enviandoWhats}
-                            className="btn-success text-xs py-1 px-2.5"
-                            title="Enviar Fechamento pelo WhatsApp"
-                          >
-                            <MessageCircle size={13} /> {enviandoWhats ? 'Enviando...' : 'WhatsApp'}
-                          </button>
-
-                          <div className={`p-1 rounded-lg transition-transform ${isSelected ? 'text-blue-400 bg-blue-500/20' : 'text-slate-400'}`}>
-                            {isSelected ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Detalhes do Fechamento do Mês */}
-                    {isSelected && (
-                      <div className="p-5 bg-[var(--canvas)] border-t border-blue-500/30 border-l-4 border-l-blue-500 space-y-4">
-                        <div className="p-3.5 rounded-2xl bg-blue-500/10 border border-blue-500/30 flex flex-wrap items-center justify-between gap-2">
-                          <div className="flex items-center gap-3">
-                            <div className="w-9 h-9 rounded-xl bg-blue-600 text-white flex items-center justify-center font-black text-base shadow">
-                              📅
-                            </div>
-                            <div>
-                              <div className="flex items-center gap-2 text-xs">
-                                <span className="font-extrabold uppercase text-blue-400 tracking-wider">Fechamento Aberto</span>
-                                <span className="text-slate-500">•</span>
-                                <span className="text-[var(--muted)]">Pessoa: <strong className="text-[var(--ink)]">{pessoa.nome}</strong></span>
-                              </div>
-                              <p className="text-base font-black text-[var(--ink)] tracking-tight">
-                                Mês de Referência: <span className="text-blue-400 underline decoration-blue-500 underline-offset-4">{h.nome_mes}</span>
-                              </p>
-                            </div>
-                          </div>
-
-                          {(h.lancamentos.length > 0 || h.pagamentos.length > 0 || h.saldo_devedor > 0) && (
-                            <button
-                              type="button"
-                              onClick={() => setModalZerar({
-                                mes: h.mes,
-                                ano: h.ano,
-                                temLancamentos: h.lancamentos.length > 0 || h.pagamentos.length > 0,
-                                saldoDevedor: h.saldo_devedor || 0,
-                              })}
-                              className="btn-secondary text-xs py-1.5 px-3 text-amber-500 border-amber-500/30 hover:bg-amber-500/10"
-                            >
-                              <Eraser size={13} /> Limpar / Zerar {h.nome_mes}
-                            </button>
-                          )}
-                        </div>
-
-                        {/* 4 Blocos de Resumo do Fechamento */}
-                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                          <div className="bg-[var(--surface)] p-3 rounded-xl border border-[var(--line)]">
-                            <span className="text-[11px] text-[var(--muted)] font-semibold block">Dívida Mês Anterior</span>
-                            <span className={`text-sm font-bold ${h.saldo_anterior > 0 ? 'text-rose-500' : 'text-[var(--muted)]'}`}>
-                              {fmt(h.saldo_anterior)}
-                            </span>
-                          </div>
-                          <div className="bg-[var(--surface)] p-3 rounded-xl border border-[var(--line)]">
-                            <span className="text-[11px] text-[var(--muted)] font-semibold block">Compras / Parcelas</span>
-                            <span className="text-sm font-bold text-[var(--ink)]">{fmt(h.total_gastos)}</span>
-                          </div>
-                          <div className="bg-[var(--surface)] p-3 rounded-xl border border-[var(--line)]">
-                            <span className="text-[11px] text-[var(--muted)] font-semibold block">Total a Pagar</span>
-                            <span className="text-sm font-black text-blue-500">{fmt(h.total_a_pagar)}</span>
-                          </div>
-                          <div className="bg-[var(--surface)] p-3 rounded-xl border border-[var(--line)]">
-                            <span className="text-[11px] text-[var(--muted)] font-semibold block">Pagamentos Recebidos</span>
-                            <span className="text-sm font-bold text-emerald-500">{fmt(h.total_pagamentos)}</span>
-                          </div>
-                        </div>
-
-                        {/* Lista de Compras/Parcelas do Mês */}
-                        <div>
-                          <h5 className="text-[11px] font-black text-[var(--muted)] uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                            <span>Compras no Cartão & Empréstimos de</span>
-                            <span className="text-blue-400 font-extrabold">{h.nome_mes}</span>
-                          </h5>
-                          {h.lancamentos.length === 0 ? (
-                            <p className="text-xs text-[var(--muted)] italic">Nenhum gasto registrado neste mês.</p>
-                          ) : (
-                            <div className="space-y-1.5">
-                              {h.lancamentos.map((item, i) => (
-                                <div key={i} className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-[var(--surface)] border border-[var(--line)] text-xs">
-                                  <div className="min-w-0">
-                                    <span className="font-bold text-[var(--ink)] block truncate">{item.descricao}</span>
-                                    <div className="flex flex-wrap items-center gap-2 mt-0.5 text-[var(--muted)] text-[11px]">
-                                      {item.cartao ? (
-                                        <span className="inline-flex items-center gap-1.5 font-medium">
-                                          <span
-                                            className="w-2.5 h-2.5 rounded-full shrink-0"
-                                            style={{ backgroundColor: getCardBrand(item.cartao, item.cartao_cor).color }}
-                                          />
-                                          💳 {item.cartao}
-                                        </span>
-                                      ) : (
-                                        <span>🏦 Conta</span>
-                                      )}
-                                      <span>•</span>
-                                      <span className="font-semibold text-blue-500">{item.parcela}</span>
-                                      <span>•</span>
-                                      <span>{new Date(item.data_lancamento + 'T00:00:00').toLocaleDateString('pt-BR')}</span>
-                                    </div>
-                                  </div>
-                                  <div className="flex items-center gap-2 shrink-0">
-                                    <span className="font-black text-[var(--ink)] text-sm">{fmt(item.valor)}</span>
-                                    <button
-                                      type="button"
-                                      onClick={() => setItemExcluindo({ item, nomeMes: h.nome_mes })}
-                                      className="p-1.5 text-[var(--muted)] hover:text-rose-500 hover:bg-rose-500/10 rounded-lg transition-colors"
-                                      title="Excluir este lançamento ou parcela"
-                                    >
-                                      <Trash2 size={14} />
-                                    </button>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Lista de Pagamentos Recebidos */}
-                        {h.pagamentos.length > 0 && (
-                          <div>
-                            <h5 className="text-[11px] font-black text-emerald-500 uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                              <span>Pagamentos Recebidos em</span>
-                              <span className="font-extrabold">{h.nome_mes}</span>
-                            </h5>
-                            <div className="space-y-1.5">
-                              {h.pagamentos.map((pag, i) => (
-                                <div key={i} className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-xs">
-                                  <div className="min-w-0">
-                                    <span className="font-bold text-emerald-500">Pagamento recebido</span>
-                                    <p className="text-[var(--muted)] text-[11px] truncate">
-                                      {new Date(pag.data + 'T00:00:00').toLocaleDateString('pt-BR')}
-                                      {pag.forma_pagamento && ` • ${pag.forma_pagamento}`}
-                                      {pag.observacao && ` • ${pag.observacao}`}
-                                      {pag.conta && ` • Entrou em: ${pag.conta}`}
-                                    </p>
-                                  </div>
-                                  <div className="flex items-center gap-2 shrink-0">
-                                    <span className="font-black text-emerald-500 text-sm">+{fmt(pag.valor)}</span>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleDeletarPagamento(pag)}
-                                      className="p-1.5 text-[var(--muted)] hover:text-rose-500 hover:bg-rose-500/10 rounded-lg transition-colors"
-                                      title="Excluir este pagamento"
-                                    >
-                                      <Trash2 size={14} />
-                                    </button>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+          {/* Tabela 1 — Planilha de Lançamentos / Parcelas do Mês ("Tudo em Linha") */}
+          <div className="bg-[var(--surface)] rounded-2xl border border-[var(--line)] overflow-hidden shadow-sm">
+            <div className="px-4 py-2.5 bg-[var(--raised)] border-b border-[var(--line)] flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <h3 className="text-xs font-black uppercase tracking-wider text-[var(--ink)]">
+                  Planilha de Compras &amp; Parcelas — <span className="text-blue-500">{fullMonthLabel}</span>
+                </h3>
+                {loadingExtrato && (
+                  <Loader2 size={13} className="animate-spin text-blue-500" />
+                )}
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[var(--surface)] border border-[var(--line)] text-[var(--muted)]">
+                  {h.lancamentos.length} {h.lancamentos.length === 1 ? 'linha' : 'linhas'}
+                </span>
+              </div>
+              <span className="text-[11px] text-[var(--muted)]">
+                Edite Data, Descrição, Cartão, Valor ou Status diretamente na linha • Enter/Sair salva automático
+              </span>
             </div>
-          ) : null}
+
+            <div className="overflow-x-auto">
+              <table className="sheet-table" data-testid="spreadsheet-launches-table">
+                <thead>
+                  <tr>
+                    <th>Data</th>
+                    <th>Descrição</th>
+                    <th>Cartão / Origem</th>
+                    <th className="text-center">Parcela</th>
+                    <th className="text-right">Valor (R$)</th>
+                    <th className="text-center">Status</th>
+                    <th className="text-center">Excluir</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {h.lancamentos.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="py-6 text-center text-xs text-[var(--muted)] italic">
+                        Nenhum lançamento registrado em {fullMonthLabel}. Use a linha azul abaixo para adicionar diretamente aqui!
+                      </td>
+                    </tr>
+                  ) : (
+                    h.lancamentos.map((item) => {
+                      const rk = `launch-${item.lancamento_id}-${item.numero}`;
+                      return (
+                        <LinhaLancamentoEditavel
+                          key={item.parcela_id || rk}
+                          item={item}
+                          cartoes={cartoes}
+                          contas={contas}
+                          savedHighlight={savedRowKey === rk}
+                          onSaveLaunch={handleSaveLaunch}
+                          onSaveParcela={handleSaveParcela}
+                          onValidationError={handleValidationError}
+                          onRequestDelete={(it) => setItemExcluindo({ item: it, nomeMes: h.nome_mes })}
+                        />
+                      );
+                    })
+                  )}
+
+                  {/* Linha inline "+ Nova Linha" */}
+                  <LinhaNovoLancamento
+                    pessoa={pessoa}
+                    mes={h.mes}
+                    ano={h.ano}
+                    cartoes={cartoes}
+                    contas={contas}
+                    onCreated={recarregarTudo}
+                    onError={handleValidationError}
+                  />
+                </tbody>
+                <tfoot>
+                  <tr>
+                    <td colSpan={4} className="text-right text-[var(--muted)] uppercase text-[11px]">
+                      Total de Compras / Parcelas em {h.nome_mes}
+                    </td>
+                    <td className="text-right font-black text-[var(--ink)] tabular-nums" data-testid="launches-table-total">
+                      {fmt(h.total_gastos)}
+                    </td>
+                    <td colSpan={2} />
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </div>
+
+          {/* Tabela 2 — Planilha de Pagamentos Recebidos no Mês */}
+          <div className="bg-[var(--surface)] rounded-2xl border border-emerald-500/25 overflow-hidden shadow-sm">
+            <div className="px-4 py-2.5 bg-emerald-500/10 border-b border-emerald-500/20 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <h3 className="text-xs font-black uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
+                  Pagamentos Recebidos — {fullMonthLabel}
+                </h3>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[var(--surface)] border border-emerald-500/30 text-emerald-600 dark:text-emerald-400">
+                  {h.pagamentos.length} {h.pagamentos.length === 1 ? 'registro' : 'registros'}
+                </span>
+              </div>
+              <span className="text-[11px] text-[var(--muted)]">
+                Alterar valor, forma ou conta atualiza saldo da pessoa e da conta bancária automaticamente
+              </span>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="sheet-table" data-testid="spreadsheet-payments-table">
+                <thead>
+                  <tr>
+                    <th>Data</th>
+                    <th>Forma / Conta Destino</th>
+                    <th className="text-right">Valor (R$)</th>
+                    <th>Observação</th>
+                    <th className="text-center">Excluir</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {h.pagamentos.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="py-5 text-center text-xs text-[var(--muted)] italic">
+                        Nenhum pagamento recebido em {fullMonthLabel}. Registre abaixo ou pelo botão "Registrar Pagamento".
+                      </td>
+                    </tr>
+                  ) : (
+                    h.pagamentos.map((pag) => {
+                      const rk = `pay-${pag.id}`;
+                      return (
+                        <LinhaPagamentoEditavel
+                          key={pag.id}
+                          pag={pag}
+                          contas={contas}
+                          savedHighlight={savedRowKey === rk}
+                          onSavePayment={handleSavePayment}
+                          onValidationError={handleValidationError}
+                          onDeletePayment={handleDeletarPagamento}
+                        />
+                      );
+                    })
+                  )}
+
+                  {/* Linha inline para adicionar pagamento rápido */}
+                  <LinhaNovoPagamento
+                    pessoa={pessoa}
+                    mes={h.mes}
+                    ano={h.ano}
+                    contas={contas}
+                    onCreated={recarregarTudo}
+                    onError={handleValidationError}
+                  />
+                </tbody>
+                <tfoot>
+                  <tr>
+                    <td colSpan={2} className="text-right text-[var(--muted)] uppercase text-[11px]">
+                      Total Pago em {h.nome_mes}
+                    </td>
+                    <td className="text-right font-black text-emerald-500 tabular-nums" data-testid="payments-table-total">
+                      +{fmt(h.total_pagamentos)}
+                    </td>
+                    <td colSpan={2} />
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </div>
         </div>
       )}
 
@@ -1430,6 +2516,7 @@ function CardPessoa({ pessoa, contas, onRefresh, modoInativas = false }) {
         <ModalRegistrarPagamento
           pessoa={pessoa}
           contas={contas}
+          defaultDate={defaultDateForMonth(h.mes, h.ano)}
           onClose={() => setModalPagamento(false)}
           onSaved={recarregarTudo}
         />
@@ -1467,7 +2554,10 @@ function CardPessoa({ pessoa, contas, onRefresh, modoInativas = false }) {
           pessoa={pessoa}
           onClose={() => setModalConfirmarExclusao(false)}
           onOpenZerar={() => setModalZerar({})}
-          onDeleted={onRefresh}
+          onDeleted={() => {
+            onDeletedPessoa();
+            onRefreshParent({ silent: false });
+          }}
         />
       )}
 
@@ -1479,6 +2569,120 @@ function CardPessoa({ pessoa, contas, onRefresh, modoInativas = false }) {
           onSaved={recarregarTudo}
         />
       )}
+    </section>
+  );
+}
+
+/**
+ * Cartão compacto de seleção de Pessoa. Ao clicar, abre automaticamente sua Planilha Mensal.
+ */
+function CardSelecaoPessoa({
+  pessoa,
+  selected,
+  modoInativas,
+  onSelect,
+  onRestaurar,
+  onOpenQuickAction,
+}) {
+  return (
+    <div
+      role="button"
+      tabIndex={modoInativas ? -1 : 0}
+      aria-pressed={selected}
+      data-testid={`pessoa-card-${pessoa.id}`}
+      onClick={() => {
+        if (!modoInativas) onSelect(pessoa);
+      }}
+      onKeyDown={(e) => {
+        if (!modoInativas && (e.key === 'Enter' || e.key === ' ')) {
+          e.preventDefault();
+          onSelect(pessoa);
+        }
+      }}
+      className={`card p-4 transition-all text-left relative ${
+        modoInativas
+          ? 'opacity-90'
+          : selected
+            ? 'border-2 border-blue-500 ring-2 ring-blue-500/20 bg-[var(--accent-tint)]/30 cursor-pointer'
+            : 'cursor-pointer hover:border-blue-400/60 hover:shadow-md'
+      }`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-center gap-3 min-w-0">
+          <Avatar nome={pessoa.nome} foto={pessoa.foto_path} cor={pessoa.cor} className="avatar--person shrink-0" />
+          <div className="min-w-0">
+            <h3 className="font-extrabold text-[var(--ink)] text-base truncate">{pessoa.nome}</h3>
+            {pessoa.telefone && (
+              <p className="text-[11px] text-[var(--muted)] font-mono truncate">📱 {pessoa.telefone}</p>
+            )}
+            <p className="text-[11px] text-[var(--muted)] mt-0.5 truncate">
+              {modoInativas
+                ? 'Cadastro arquivado'
+                : `Mês atual: ${fmt(pessoa.total_gastos_mes)}`}
+            </p>
+          </div>
+        </div>
+
+        {!modoInativas && (
+          <div className="flex items-center gap-0.5 shrink-0">
+            {pessoa.token_acesso && (
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onOpenQuickAction('link', pessoa); }}
+                className="p-1.5 text-blue-500 hover:bg-blue-500/10 rounded-lg transition-colors"
+                title="Link de Celular"
+              >
+                <Link2 size={14} />
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onOpenQuickAction('editar', pessoa); }}
+              className="p-1.5 text-[var(--muted)] hover:text-blue-500 hover:bg-[var(--accent-tint)] rounded-lg transition-colors"
+              title="Editar Pessoa"
+            >
+              <Edit2 size={14} />
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-3 pt-2.5 border-t border-[var(--line)] flex items-center justify-between gap-2">
+        {modoInativas ? (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onRestaurar(pessoa);
+            }}
+            className="btn-success w-full text-xs py-2 px-3 font-bold flex items-center justify-center gap-1.5"
+          >
+            <RotateCcw size={14} />
+            <span>Restaurar Pessoa</span>
+          </button>
+        ) : (
+          <>
+            <div>
+              {pessoa.saldo_devedor > 0 ? (
+                <span className="badge-red text-xs py-0.5 px-2.5">Deve {fmt(pessoa.saldo_devedor)}</span>
+              ) : pessoa.credito_a_favor > 0 ? (
+                <span className="badge-blue text-xs py-0.5 px-2.5">Crédito {fmt(pessoa.credito_a_favor)}</span>
+              ) : (
+                <span className="badge-green text-xs py-0.5 px-2.5">Quitado ✓</span>
+              )}
+            </div>
+
+            <span
+              className={`inline-flex items-center gap-1 text-[11px] font-bold ${
+                selected ? 'text-blue-500' : 'text-[var(--muted)]'
+              }`}
+            >
+              <Table2 size={13} />
+              <span>{selected ? 'Planilha aberta' : 'Abrir planilha'}</span>
+            </span>
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -1486,29 +2690,57 @@ function CardPessoa({ pessoa, contas, onRefresh, modoInativas = false }) {
 export default function Pessoas() {
   const [lista, setLista] = useState([]);
   const [contas, setContas] = useState([]);
+  const [cartoes, setCartoes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [modalNovo, setModalNovo] = useState(false);
   const [mostrarInativas, setMostrarInativas] = useState(false);
+  const [selectedPessoaId, setSelectedPessoaId] = useState(null);
+  const [quickModal, setQuickModal] = useState(null); // { type: 'link' | 'editar', pessoa }
+  const spreadsheetContainerRef = useRef(null);
 
-  const carregar = async () => {
-    setLoading(true);
+  const carregar = async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
     try {
-      const [resP, resC] = await Promise.all([
+      const [resP, resC, resCards] = await Promise.all([
         pessoasApi.listar(mostrarInativas),
-        contasApi.listar()
+        contasApi.listar(),
+        cartoesApi.listar(),
       ]);
-      setLista(resP.data);
-      setContas(resC.data);
+      setLista(resP.data || []);
+      setContas(resC.data || []);
+      setCartoes(resCards.data || []);
     } catch (e) {
       console.error(e);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
   useEffect(() => {
-    carregar();
+    setSelectedPessoaId(null);
+    carregar({ silent: false });
   }, [mostrarInativas]);
+
+  const selectedPessoa = useMemo(
+    () => (mostrarInativas ? null : lista.find((p) => p.id === selectedPessoaId) || null),
+    [lista, selectedPessoaId, mostrarInativas]
+  );
+
+  const handleSelectPessoa = (pessoa) => {
+    setSelectedPessoaId(pessoa.id);
+    setTimeout(() => {
+      spreadsheetContainerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 60);
+  };
+
+  const handleRestaurar = async (pessoa) => {
+    try {
+      await pessoasApi.restaurar(pessoa.id);
+      carregar({ silent: false });
+    } catch (err) {
+      alert('Erro ao restaurar pessoa: ' + (err.response?.data?.detail || err.message));
+    }
+  };
 
   const totalPendente = lista.reduce((acc, p) => acc + (p.saldo_devedor || 0), 0);
 
@@ -1516,12 +2748,15 @@ export default function Pessoas() {
     <div className="space-y-6">
       <div className="page-heading">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-extrabold text-[var(--ink)] tracking-tight">Pessoas & Fechamentos</h1>
+          <h1 className="text-2xl sm:text-3xl font-extrabold text-[var(--ink)] tracking-tight">Pessoas &amp; Fechamentos</h1>
           <p className="text-[var(--muted)] text-sm mt-0.5">
             {mostrarInativas ? (
               'Pessoas removidas/arquivadas — restaure com 1 clique mantendo histórico e link'
             ) : (
-              <>Total a receber de todos: <strong className="text-rose-500">{fmt(totalPendente)}</strong></>
+              <>
+                Clique em uma pessoa para abrir automaticamente a planilha mensal editável • Total a receber:{' '}
+                <strong className="text-rose-500" data-testid="pessoas-total-pendente">{fmt(totalPendente)}</strong>
+              </>
             )}
           </p>
         </div>
@@ -1557,7 +2792,7 @@ export default function Pessoas() {
           {!mostrarInativas && (
             <>
               <p className="text-[var(--muted)] text-sm max-w-sm mx-auto mt-1 mb-5">
-                Cadastre as pessoas que usam seus cartões (Thais, Luane, Alessandra...) para controlar saldos e gerar fechamentos em PDF.
+                Cadastre as pessoas que usam seus cartões (Thais, Luane, Alessandra...) para abrir a planilha mensal editável e gerar fechamentos em PDF.
               </p>
               <button onClick={() => setModalNovo(true)} className="btn-primary text-sm">
                 Cadastrar Primeira Pessoa
@@ -1566,21 +2801,67 @@ export default function Pessoas() {
           )}
         </div>
       ) : (
-        <div className="space-y-4">
-          {lista.map(p => (
-            <CardPessoa
-              key={p.id}
-              pessoa={p}
-              contas={contas}
-              modoInativas={mostrarInativas}
-              onRefresh={carregar}
-            />
-          ))}
-        </div>
+        <>
+          {/* Grade de Pessoas — 1 clique abre automaticamente a Planilha Mensal */}
+          <div
+            data-testid="pessoas-grid"
+            className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3.5"
+          >
+            {lista.map((p) => (
+              <CardSelecaoPessoa
+                key={p.id}
+                pessoa={p}
+                selected={!mostrarInativas && selectedPessoaId === p.id}
+                modoInativas={mostrarInativas}
+                onSelect={handleSelectPessoa}
+                onRestaurar={handleRestaurar}
+                onOpenQuickAction={(type, person) => setQuickModal({ type, pessoa: person })}
+              />
+            ))}
+          </div>
+
+          {/* Planilha Mensal Editável (abre automaticamente ao clicar na pessoa) */}
+          {selectedPessoa && (
+            <div ref={spreadsheetContainerRef} className="scroll-mt-4">
+              <PlanilhaPessoaMensal
+                key={selectedPessoa.id}
+                pessoa={selectedPessoa}
+                cartoes={cartoes}
+                contas={contas}
+                onRefreshParent={carregar}
+                onClose={() => setSelectedPessoaId(null)}
+                onDeletedPessoa={() => setSelectedPessoaId(null)}
+              />
+            </div>
+          )}
+        </>
       )}
 
       {modalNovo && (
-        <ModalNovaPessoa onClose={() => setModalNovo(false)} onSaved={carregar} />
+        <ModalNovaPessoa
+          onClose={() => setModalNovo(false)}
+          onSaved={async (criada) => {
+            await carregar({ silent: false });
+            if (criada?.id && !mostrarInativas) {
+              setSelectedPessoaId(criada.id);
+            }
+          }}
+        />
+      )}
+
+      {quickModal?.type === 'editar' && (
+        <ModalEditarPessoa
+          pessoa={quickModal.pessoa}
+          onClose={() => setQuickModal(null)}
+          onSaved={() => carregar({ silent: true })}
+        />
+      )}
+
+      {quickModal?.type === 'link' && (
+        <ModalLinkLancamento
+          pessoa={quickModal.pessoa}
+          onClose={() => setQuickModal(null)}
+        />
       )}
     </div>
   );

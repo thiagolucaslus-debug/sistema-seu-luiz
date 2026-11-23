@@ -39,6 +39,39 @@ class PagamentoPessoaRequest(BaseModel):
     outra_forma: Optional[str] = Field(default=None, max_length=100)
 
 
+class PagamentoPessoaUpdate(BaseModel):
+    valor: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
+    data: Optional[date] = None
+    observacao: Optional[str] = None
+    conta_id: Optional[int] = None
+    forma: Optional[Literal["dinheiro", "pix", "transferencia", "abatimento", "outro"]] = None
+    outra_forma: Optional[str] = Field(default=None, max_length=100)
+    forma_pagamento: Optional[str] = Field(default=None, max_length=100)
+
+
+FORMAS_PAGAMENTO_MAP = {
+    "dinheiro": "Dinheiro em mãos",
+    "pix": "Pix",
+    "transferencia": "Transferência bancária",
+    "abatimento": "Abatimento de dívida",
+}
+
+
+def _forma_pagamento_para_codigo(forma_pagamento: Optional[str], tem_conta: bool = False) -> str:
+    texto = (forma_pagamento or "").strip().lower()
+    if not texto:
+        return "transferencia" if tem_conta else "dinheiro"
+    if "pix" in texto:
+        return "pix"
+    if "dinheiro" in texto:
+        return "dinheiro"
+    if "transfer" in texto or "crédito em conta" in texto or "credito em conta" in texto:
+        return "transferencia"
+    if "abatimento" in texto:
+        return "abatimento"
+    return "outro"
+
+
 class ZerarPessoaRequest(BaseModel):
     modo: Literal["apagar_lancamentos", "abater_divida"] = "apagar_lancamentos"
     escopo: Literal["tudo", "mes"] = "tudo"
@@ -451,7 +484,13 @@ def zerar_conta_pessoa(
     }
 
 @router.get("/{id}/extrato")
-def extrato_pessoa(id: int, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):
+def extrato_pessoa(
+    id: int,
+    mes: Optional[int] = None,
+    ano: Optional[int] = None,
+    db: Session = Depends(get_db),
+    usuario = Depends(auth.get_usuario_atual),
+):
     hoje = date.today()
     pessoa = (
         db.query(models.Pessoa)
@@ -460,6 +499,11 @@ def extrato_pessoa(id: int, db: Session = Depends(get_db), usuario = Depends(aut
     )
     if not pessoa:
         raise HTTPException(status_code=404, detail="Pessoa não encontrada.")
+
+    if mes is not None and not (1 <= int(mes) <= 12):
+        raise HTTPException(status_code=400, detail="Mês inválido (use 1 a 12).")
+    if ano is not None and not (2000 <= int(ano) <= 2100):
+        raise HTTPException(status_code=400, detail="Ano inválido.")
 
     # Busca todos os meses que possuem lançamentos ou pagamentos ativos
     meses_com_dados = set()
@@ -483,19 +527,21 @@ def extrato_pessoa(id: int, db: Session = Depends(get_db), usuario = Depends(aut
 
     # Garante que o mês atual sempre esteja na lista
     meses_com_dados.add((hoje.year, hoje.month))
+    if mes is not None and ano is not None:
+        meses_com_dados.add((int(ano), int(mes)))
 
     meses_ordenados = sorted(list(meses_com_dados), reverse=True)
     nomes_meses = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez']
 
     historico = []
-    for ano, mes in meses_ordenados:
-        saldo = calcular_saldo_pessoa_mes(db, id, mes, ano)
+    for ano_it, mes_it in meses_ordenados:
+        saldo = calcular_saldo_pessoa_mes(db, id, mes_it, ano_it)
 
-        # Lançamentos deste mês
+        # Lançamentos deste mês (ordenados de forma estável para a planilha)
         lancamentos_mes = []
         for lanc in lancamentos_todos:
             for p in lanc.parcelas:
-                if p.mes == mes and p.ano == ano and p.status != "cancelado":
+                if p.mes == mes_it and p.ano == ano_it and p.status != "cancelado":
                     lancamentos_mes.append({
                         "parcela_id": p.id,
                         "lancamento_id": lanc.id,
@@ -505,17 +551,25 @@ def extrato_pessoa(id: int, db: Session = Depends(get_db), usuario = Depends(aut
                         "tipo": lanc.tipo,
                         "parcela": f"{p.numero}/{lanc.total_parcelas}" if lanc.total_parcelas > 1 else "À vista",
                         "valor": p.valor,
+                        "valor_total": lanc.valor_total,
                         "status": p.status,
+                        "mes": p.mes,
+                        "ano": p.ano,
+                        "cartao_id": lanc.cartao_id,
                         "cartao": lanc.cartao.nome if lanc.cartao else None,
                         "cartao_cor": lanc.cartao.cor if lanc.cartao else None,
                         "cartao_bandeira": lanc.cartao.bandeira if lanc.cartao else None,
+                        "conta_id": lanc.conta_id,
                         "conta": lanc.conta.nome if lanc.conta else None,
+                        "modulo_id": lanc.modulo_id,
                         "modulo": lanc.modulo.nome if lanc.modulo else None,
+                        "observacoes": lanc.observacoes,
                         "data_lancamento": str(lanc.data_lancamento)
                     })
+        lancamentos_mes.sort(key=lambda x: (x["data_lancamento"], x["lancamento_id"], x["numero"]))
 
         # Pagamentos deste mês
-        _, ultimo_dia = calendar.monthrange(ano, mes)
+        _, ultimo_dia = calendar.monthrange(ano_it, mes_it)
         pagamentos_mes = [
             {
                 "id": pag.id,
@@ -523,20 +577,25 @@ def extrato_pessoa(id: int, db: Session = Depends(get_db), usuario = Depends(aut
                 "data": str(pag.data),
                 "observacao": pag.observacao,
                 "forma_pagamento": pag.forma_pagamento or ("Crédito em conta" if pag.conta else "Dinheiro em mãos"),
+                "forma_codigo": _forma_pagamento_para_codigo(pag.forma_pagamento, pag.conta_id is not None),
+                "conta_id": pag.conta_id,
                 "conta": pag.conta.nome if pag.conta else None
             }
-            for pag in pagamentos_todos
-            if date(ano, mes, 1) <= pag.data <= date(ano, mes, ultimo_dia)
+            for pag in sorted(pagamentos_todos, key=lambda pg: (pg.data, pg.id))
+            if date(ano_it, mes_it, 1) <= pag.data <= date(ano_it, mes_it, ultimo_dia)
         ]
 
         historico.append({
-            "mes": mes,
-            "ano": ano,
-            "nome_mes": f"{nomes_meses[mes-1]}/{ano}",
-            "is_atual": (mes == hoje.month and ano == hoje.year),
-            "is_passado": (ano < hoje.year or (ano == hoje.year and mes < hoje.month)),
+            "mes": mes_it,
+            "ano": ano_it,
+            "nome_mes": f"{nomes_meses[mes_it-1]}/{ano_it}",
+            "is_atual": (mes_it == hoje.month and ano_it == hoje.year),
+            "is_passado": (ano_it < hoje.year or (ano_it == hoje.year and mes_it < hoje.month)),
             "saldo_anterior": saldo["saldo_anterior"],
             "total_gastos": saldo["total_gastos_mes"],
+            "total_compras_para_mim": saldo["total_compras_para_mim_mes"],
+            "total_reembolsos": saldo["total_reembolsos_mes"],
+            "total_parcelas_pagas_mes": saldo["total_parcelas_pagas_mes"],
             "total_a_pagar": saldo["total_a_pagar"],
             "total_pagamentos": saldo["total_pagamentos_mes"],
             "saldo_devedor": saldo["saldo_devedor"],
@@ -600,6 +659,94 @@ def registrar_pagamento(id: int, req: PagamentoPessoaRequest, db: Session = Depe
     db.commit()
     db.refresh(pag)
     return {"ok": True, "mensagem": f"Pagamento de R$ {req.valor:.2f} registrado com sucesso.", "id": pag.id}
+
+@router.patch("/{id}/pagamento/{pag_id}")
+def atualizar_pagamento(
+    id: int,
+    pag_id: int,
+    req: PagamentoPessoaUpdate,
+    db: Session = Depends(get_db),
+    usuario = Depends(auth.get_usuario_atual),
+):
+    pag = (
+        db.query(models.PagamentoPessoa)
+        .filter(
+            models.PagamentoPessoa.id == pag_id,
+            models.PagamentoPessoa.pessoa_id == id,
+            models.PagamentoPessoa.usuario_id == usuario.id,
+        )
+        .first()
+    )
+    if not pag:
+        raise HTTPException(status_code=404, detail="Registro de pagamento não encontrado.")
+
+    fields = req.model_fields_set
+
+    if "valor" in fields:
+        if req.valor is None or float(req.valor) <= 0:
+            raise HTTPException(status_code=400, detail="Informe um valor maior que zero.")
+        pag.valor = round(float(req.valor), 2)
+
+    if "data" in fields:
+        if req.data is None:
+            raise HTTPException(status_code=400, detail="Informe uma data válida.")
+        pag.data = req.data
+
+    if "observacao" in fields:
+        pag.observacao = (req.observacao or "").strip() or None
+
+    nova_forma_code = None
+    if "forma" in fields and req.forma is not None:
+        nova_forma_code = req.forma
+        if req.forma == "outro":
+            forma_txt = (req.outra_forma or req.forma_pagamento or "").strip()
+            if not forma_txt:
+                raise HTTPException(status_code=400, detail="Informe a outra forma de pagamento.")
+            pag.forma_pagamento = forma_txt
+        else:
+            pag.forma_pagamento = FORMAS_PAGAMENTO_MAP[req.forma]
+            if req.forma in {"dinheiro", "abatimento"}:
+                pag.conta_id = None
+    elif "forma_pagamento" in fields:
+        forma_txt = (req.forma_pagamento or "").strip()
+        if not forma_txt:
+            raise HTTPException(status_code=400, detail="Informe a forma de pagamento.")
+        pag.forma_pagamento = forma_txt
+
+    if "conta_id" in fields:
+        if nova_forma_code in {"dinheiro", "abatimento"}:
+            pag.conta_id = None
+        elif req.conta_id is not None:
+            conta_dest = (
+                db.query(models.ContaBancaria)
+                .filter(
+                    models.ContaBancaria.id == req.conta_id,
+                    models.ContaBancaria.usuario_id == usuario.id,
+                )
+                .first()
+            )
+            if conta_dest is None:
+                raise HTTPException(status_code=400, detail="A conta de destino não existe.")
+            pag.conta_id = conta_dest.id
+        else:
+            pag.conta_id = None
+
+    bump_user_sync_rev(db, usuario.id)
+    db.commit()
+    db.refresh(pag)
+    return {
+        "ok": True,
+        "id": pag.id,
+        "pessoa_id": pag.pessoa_id,
+        "valor": pag.valor,
+        "data": str(pag.data),
+        "observacao": pag.observacao,
+        "forma_pagamento": pag.forma_pagamento or ("Crédito em conta" if pag.conta else "Dinheiro em mãos"),
+        "forma_codigo": _forma_pagamento_para_codigo(pag.forma_pagamento, pag.conta_id is not None),
+        "conta_id": pag.conta_id,
+        "conta": pag.conta.nome if pag.conta else None,
+    }
+
 
 @router.delete("/{id}/pagamento/{pag_id}")
 def deletar_pagamento(id: int, pag_id: int, db: Session = Depends(get_db), usuario = Depends(auth.get_usuario_atual)):

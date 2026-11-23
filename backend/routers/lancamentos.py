@@ -5,10 +5,11 @@ from database import get_db
 import models
 import auth
 from tenancy import bump_user_sync_rev
-from pydantic import BaseModel
-from typing import Optional, List
+from pydantic import BaseModel, Field
+from typing import Literal, Optional, List
 from datetime import date
 import calendar
+import math
 
 router = APIRouter(prefix="/lancamentos", tags=["lancamentos"])
 
@@ -27,6 +28,29 @@ class LancamentoCreate(BaseModel):
     modulo_id: Optional[int] = None
     subcategoria_id: Optional[int] = None
     observacoes: Optional[str] = None
+
+
+class LancamentoUpdate(BaseModel):
+    descricao: Optional[str] = None
+    tipo: Optional[str] = None
+    valor_total: Optional[float] = None
+    data_lancamento: Optional[date] = None
+    cartao_id: Optional[int] = None
+    conta_id: Optional[int] = None
+    conta_destino_id: Optional[int] = None
+    pessoa_id: Optional[int] = None
+    modulo_id: Optional[int] = None
+    subcategoria_id: Optional[int] = None
+    observacoes: Optional[str] = None
+
+
+class ParcelaUpdate(BaseModel):
+    valor: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
+    status: Optional[Literal["pendente", "pago", "cancelado"]] = None
+    data_lancamento: Optional[date] = None
+    data_pagamento: Optional[date] = None
+    mes: Optional[int] = Field(default=None, ge=1, le=12)
+    ano: Optional[int] = Field(default=None, ge=2000, le=2100)
 
 def determinar_mes_inicial_fatura(cartao: Optional[models.Cartao], data_compra: date, mes_escolhido: Optional[int], ano_escolhido: Optional[int]):
     if mes_escolhido and ano_escolhido:
@@ -407,3 +431,293 @@ def alterar_status_parcela(id: int, numero: int, status: str, db: Session = Depe
     bump_user_sync_rev(db, usuario.id)
     db.commit()
     return {"ok": True, "mensagem": f"Parcela {numero} marcada como {status}."}
+
+
+@router.patch("/{id}")
+def atualizar_lancamento(
+    id: int,
+    data: LancamentoUpdate,
+    db: Session = Depends(get_db),
+    usuario = Depends(auth.get_usuario_atual),
+):
+    lanc = (
+        db.query(models.Lancamento)
+        .filter(models.Lancamento.id == id, models.Lancamento.usuario_id == usuario.id)
+        .first()
+    )
+    if not lanc:
+        raise HTTPException(status_code=404, detail="Lançamento não encontrado.")
+    if lanc.cancelado:
+        raise HTTPException(status_code=400, detail="Não é possível editar um lançamento cancelado.")
+
+    fields = data.model_fields_set
+
+    if "descricao" in fields:
+        descricao_limpa = (data.descricao or "").strip()
+        if not descricao_limpa:
+            raise HTTPException(status_code=400, detail="Informe a descrição do lançamento.")
+        lanc.descricao = descricao_limpa
+
+    if "data_lancamento" in fields:
+        if data.data_lancamento is None:
+            raise HTTPException(status_code=400, detail="Informe uma data válida.")
+        lanc.data_lancamento = data.data_lancamento
+
+    if "tipo" in fields:
+        if not data.tipo or data.tipo not in TIPOS_LANCAMENTO_VALIDOS:
+            raise HTTPException(status_code=400, detail="Tipo de lançamento inválido.")
+        lanc.tipo = data.tipo
+
+    if "cartao_id" in fields:
+        if data.cartao_id is not None:
+            cartao = (
+                db.query(models.Cartao)
+                .filter(models.Cartao.id == data.cartao_id, models.Cartao.usuario_id == usuario.id)
+                .first()
+            )
+            if not cartao or (not cartao.ativo and cartao.id != lanc.cartao_id):
+                raise HTTPException(status_code=400, detail="Selecione um cartão ativo.")
+            lanc.cartao_id = cartao.id
+            if "conta_id" not in fields:
+                lanc.conta_id = None
+            if "tipo" not in fields and lanc.tipo == "despesa_conta":
+                lanc.tipo = "compra_cartao"
+        else:
+            lanc.cartao_id = None
+            if "tipo" not in fields and lanc.tipo == "compra_cartao":
+                lanc.tipo = "despesa_conta"
+
+    if "conta_id" in fields:
+        if data.conta_id is not None:
+            conta = (
+                db.query(models.ContaBancaria)
+                .filter(models.ContaBancaria.id == data.conta_id, models.ContaBancaria.usuario_id == usuario.id)
+                .first()
+            )
+            if not conta:
+                raise HTTPException(status_code=400, detail="Conta bancária inválida.")
+            lanc.conta_id = conta.id
+            if ("cartao_id" not in fields or data.cartao_id is None) and lanc.tipo == "compra_cartao":
+                lanc.cartao_id = None
+                if "tipo" not in fields:
+                    lanc.tipo = "despesa_conta"
+        else:
+            lanc.conta_id = None
+
+    if "conta_destino_id" in fields:
+        if data.conta_destino_id is not None:
+            conta_dest = (
+                db.query(models.ContaBancaria)
+                .filter(
+                    models.ContaBancaria.id == data.conta_destino_id,
+                    models.ContaBancaria.usuario_id == usuario.id,
+                )
+                .first()
+            )
+            if not conta_dest:
+                raise HTTPException(status_code=400, detail="Conta bancária de destino inválida.")
+            lanc.conta_destino_id = conta_dest.id
+        else:
+            lanc.conta_destino_id = None
+
+    if "pessoa_id" in fields:
+        if data.pessoa_id is not None:
+            pessoa = (
+                db.query(models.Pessoa)
+                .filter(models.Pessoa.id == data.pessoa_id, models.Pessoa.usuario_id == usuario.id)
+                .first()
+            )
+            if not pessoa:
+                raise HTTPException(status_code=400, detail="Pessoa inválida.")
+            lanc.pessoa_id = pessoa.id
+        else:
+            lanc.pessoa_id = None
+
+    if "modulo_id" in fields:
+        if data.modulo_id is not None:
+            modulo = (
+                db.query(models.Modulo)
+                .filter(models.Modulo.id == data.modulo_id, models.Modulo.usuario_id == usuario.id)
+                .first()
+            )
+            if not modulo:
+                raise HTTPException(status_code=400, detail="Módulo inválido.")
+            lanc.modulo_id = modulo.id
+        else:
+            lanc.modulo_id = None
+
+    if "subcategoria_id" in fields:
+        if data.subcategoria_id is not None:
+            subcat = (
+                db.query(models.Subcategoria)
+                .join(models.Modulo)
+                .filter(
+                    models.Subcategoria.id == data.subcategoria_id,
+                    models.Modulo.usuario_id == usuario.id,
+                )
+                .first()
+            )
+            if not subcat:
+                raise HTTPException(status_code=400, detail="Subcategoria inválida.")
+            lanc.subcategoria_id = subcat.id
+        else:
+            lanc.subcategoria_id = None
+
+    if "observacoes" in fields:
+        lanc.observacoes = (data.observacoes or "").strip() or None
+
+    if "valor_total" in fields:
+        if (
+            data.valor_total is None
+            or not math.isfinite(float(data.valor_total))
+            or float(data.valor_total) <= 0
+        ):
+            raise HTTPException(status_code=400, detail="Informe um valor maior que zero.")
+        novo_total = round(float(data.valor_total), 2)
+        lanc.valor_total = novo_total
+        ativas = [
+            p for p in sorted(lanc.parcelas, key=lambda px: px.numero)
+            if p.status != "cancelado"
+        ]
+        if len(ativas) == 1:
+            ativas[0].valor = novo_total
+        elif len(ativas) > 1:
+            valor_base = round(novo_total / len(ativas), 2)
+            diferenca = round(novo_total - round(valor_base * len(ativas), 2), 2)
+            for idx_p, parc in enumerate(ativas):
+                parc.valor = round(valor_base + (diferenca if idx_p == len(ativas) - 1 else 0.0), 2)
+
+    if lanc.tipo == "compra_cartao" and not lanc.cartao_id:
+        raise HTTPException(status_code=400, detail="Selecione um cartão ativo para compras no cartão.")
+    if lanc.tipo == "transferencia":
+        if not lanc.conta_id or not lanc.conta_destino_id:
+            raise HTTPException(status_code=400, detail="Selecione as contas de origem e destino para a transferência.")
+        if lanc.conta_id == lanc.conta_destino_id:
+            raise HTTPException(status_code=400, detail="A conta de destino deve ser diferente da conta de origem.")
+
+    bump_user_sync_rev(db, usuario.id)
+    db.commit()
+    db.refresh(lanc)
+
+    parcelas_ordenadas = sorted(lanc.parcelas, key=lambda p: p.numero)
+    return {
+        "ok": True,
+        "id": lanc.id,
+        "descricao": lanc.descricao,
+        "tipo": lanc.tipo,
+        "valor_total": lanc.valor_total,
+        "total_parcelas": lanc.total_parcelas,
+        "data_lancamento": str(lanc.data_lancamento),
+        "cartao_id": lanc.cartao_id,
+        "cartao": lanc.cartao.nome if lanc.cartao else None,
+        "cartao_cor": lanc.cartao.cor if lanc.cartao else None,
+        "conta_id": lanc.conta_id,
+        "conta": lanc.conta.nome if lanc.conta else None,
+        "pessoa_id": lanc.pessoa_id,
+        "modulo_id": lanc.modulo_id,
+        "observacoes": lanc.observacoes,
+        "parcelas": [
+            {
+                "id": p.id,
+                "numero": p.numero,
+                "valor": p.valor,
+                "mes": p.mes,
+                "ano": p.ano,
+                "status": p.status,
+            }
+            for p in parcelas_ordenadas
+        ],
+    }
+
+
+@router.patch("/{id}/parcela/{numero}")
+def atualizar_parcela(
+    id: int,
+    numero: int,
+    data: ParcelaUpdate,
+    db: Session = Depends(get_db),
+    usuario = Depends(auth.get_usuario_atual),
+):
+    parcela = (
+        db.query(models.Parcela)
+        .join(models.Lancamento)
+        .filter(
+            models.Parcela.lancamento_id == id,
+            models.Parcela.numero == numero,
+            models.Lancamento.usuario_id == usuario.id,
+        )
+        .first()
+    )
+    if not parcela:
+        raise HTTPException(status_code=404, detail="Parcela não encontrada.")
+
+    lanc = parcela.lancamento
+    fields = data.model_fields_set
+
+    if parcela.status == "cancelado" and ("status" not in fields or data.status == "cancelado"):
+        raise HTTPException(status_code=400, detail="Não é possível editar uma parcela cancelada.")
+
+    if "valor" in fields:
+        if data.valor is None or not math.isfinite(float(data.valor)) or float(data.valor) <= 0:
+            raise HTTPException(status_code=400, detail="Informe um valor maior que zero.")
+        parcela.valor = round(float(data.valor), 2)
+
+    if "status" in fields:
+        if data.status not in ("pendente", "pago", "cancelado"):
+            raise HTTPException(status_code=400, detail="Status inválido.")
+        parcela.status = data.status
+        if data.status == "pago":
+            parcela.data_pagamento = data.data_pagamento or date.today()
+        else:
+            parcela.data_pagamento = None
+    elif "data_pagamento" in fields:
+        parcela.data_pagamento = data.data_pagamento
+
+    if "data_lancamento" in fields:
+        if data.data_lancamento is None:
+            raise HTTPException(status_code=400, detail="Informe uma data válida.")
+        lanc.data_lancamento = data.data_lancamento
+
+    if "mes" in fields:
+        if data.mes is None:
+            raise HTTPException(status_code=400, detail="Mês inválido.")
+        parcela.mes = int(data.mes)
+        if parcela.numero == 1:
+            lanc.mes_fatura = int(data.mes)
+
+    if "ano" in fields:
+        if data.ano is None:
+            raise HTTPException(status_code=400, detail="Ano inválido.")
+        parcela.ano = int(data.ano)
+        if parcela.numero == 1:
+            lanc.ano_fatura = int(data.ano)
+
+    if lanc and lanc.parcelas:
+        if all(p.status == "cancelado" for p in lanc.parcelas):
+            lanc.cancelado = True
+            _reconciliar_divida_lancamento(db, lanc.id, usuario.id)
+        else:
+            if parcela.status != "cancelado" and lanc.cancelado:
+                lanc.cancelado = False
+            ativas = [p for p in lanc.parcelas if p.status != "cancelado"]
+            if ativas:
+                lanc.valor_total = round(sum(float(p.valor) for p in ativas), 2)
+
+    bump_user_sync_rev(db, usuario.id)
+    db.commit()
+    db.refresh(parcela)
+    db.refresh(lanc)
+
+    return {
+        "ok": True,
+        "parcela_id": parcela.id,
+        "lancamento_id": lanc.id,
+        "numero": parcela.numero,
+        "valor": parcela.valor,
+        "valor_total": lanc.valor_total,
+        "status": parcela.status,
+        "mes": parcela.mes,
+        "ano": parcela.ano,
+        "data_lancamento": str(lanc.data_lancamento),
+        "data_pagamento": str(parcela.data_pagamento) if parcela.data_pagamento else None,
+    }

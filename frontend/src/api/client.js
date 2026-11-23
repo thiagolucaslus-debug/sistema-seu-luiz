@@ -144,8 +144,9 @@ export const pessoas = {
   zerar: (id, data) => api.post(`/pessoas/${id}/zerar`, data),
   uploadFoto: (id, formData) => api.post(`/pessoas/${id}/foto`, formData, { headers: { 'Content-Type': 'multipart/form-data' } }),
   deletar: (id) => api.delete(`/pessoas/${id}`),
-  extrato: (id) => api.get(`/pessoas/${id}/extrato`),
+  extrato: (id, params) => api.get(`/pessoas/${id}/extrato`, { params }),
   registrarPagamento: (id, data) => api.post(`/pessoas/${id}/pagamento`, data),
+  atualizarPagamento: (pessoaId, pagId, data) => api.patch(`/pessoas/${pessoaId}/pagamento/${pagId}`, data),
   deletarPagamento: (pessoaId, pagId) => api.delete(`/pessoas/${pessoaId}/pagamento/${pagId}`),
   obterPdfPath: (id, mes, ano) => api.get(`/pessoas/${id}/pdf-path/${mes}/${ano}`),
   gerarPDFUrl: (id, mes, ano) => `/pessoas/${id}/pdf/${mes}/${ano}`,
@@ -154,7 +155,9 @@ export const pessoas = {
 export const lancamentos = {
   listar: (params) => api.get('/lancamentos/', { params }),
   criar: (data) => api.post('/lancamentos/', data),
+  atualizar: (id, data) => api.patch(`/lancamentos/${id}`, data),
   cancelar: (id) => api.delete(`/lancamentos/${id}`),
+  atualizarParcela: (id, num, data) => api.patch(`/lancamentos/${id}/parcela/${num}`, data),
   alterarParcelaStatus: (id, num, status) => api.patch(`/lancamentos/${id}/parcela/${num}/status`, null, { params: { status } }),
 };
 

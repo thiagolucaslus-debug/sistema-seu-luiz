@@ -244,7 +244,10 @@ def gerar_pdf_fechamento(db: Session, pessoa_id: int, mes: int, ano: int, nome_s
     if saldo_info.get("total_reembolsos_mes", 0) > 0:
         resumo_rows.append(["(+) Reembolsos e acertos pagos a você", fmt_brl(saldo_info['total_reembolsos_mes'])])
 
+    idx_total_liquido = len(resumo_rows)
     resumo_rows.append(["(=) Total Líquido a Pagar deste Mês", fmt_brl(saldo_info["total_a_pagar"])])
+    if saldo_info.get("total_parcelas_pagas_mes", 0) > 0:
+        resumo_rows.append(["(-) Parcelas já marcadas como pagas", f"- {fmt_brl(saldo_info['total_parcelas_pagas_mes'])}"])
     resumo_rows.append(["(-) Pagamentos já recebidos neste mês", f"- {fmt_brl(saldo_info['total_pagamentos_mes'])}"])
 
     t_resumo = Table(resumo_rows, colWidths=[12.4*cm, 5.0*cm])
@@ -255,8 +258,8 @@ def gerar_pdf_fechamento(db: Session, pessoa_id: int, mes: int, ano: int, nome_s
         ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
         ('GRID', (0, 0), (-1, -1), 0.5, COR_BORDA),
         ('ROWBACKGROUNDS', (0, 0), (-1, -1), [white, COR_CINZA_CLARO]),
-        ('FONTNAME', (0, -2), (-1, -2), 'Helvetica-Bold'),
-        ('BACKGROUND', (0, -2), (-1, -2), HexColor("#DBEAFE")),
+        ('FONTNAME', (0, idx_total_liquido), (-1, idx_total_liquido), 'Helvetica-Bold'),
+        ('BACKGROUND', (0, idx_total_liquido), (-1, idx_total_liquido), HexColor("#DBEAFE")),
     ]))
     story.append(t_resumo)
     story.append(Spacer(1, 0.3*cm))

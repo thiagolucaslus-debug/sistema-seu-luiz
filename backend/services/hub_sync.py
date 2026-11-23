@@ -355,7 +355,8 @@ class HubSyncClient:
                                 changed = True
                         if kind == "pagamento_pessoa" and p_str.startswith("/pessoas/") and "/pagamento/" in p_str:
                             head_p, pag_seg = p_str.rsplit("/pagamento/", 1)
-                            if pag_seg.isdigit() and int(pag_seg) == old_id:
+                            pag_seg_clean = pag_seg.rstrip("/")
+                            if pag_seg_clean.isdigit() and int(pag_seg_clean) == old_id:
                                 it["path"] = f"{head_p}/pagamento/{new_id}"
                                 changed = True
                         ct_str = str(it.get("content_type") or "").lower()
@@ -759,8 +760,9 @@ class HubSyncClient:
 
             if path.startswith("/pessoas/") and "/pagamento/" in path:
                 head_p, pag_seg = path.rsplit("/pagamento/", 1)
-                if pag_seg.isdigit() and int(pag_seg) in id_remaps["pagamento_pessoa"]:
-                    path = f"{head_p}/pagamento/{id_remaps['pagamento_pessoa'][int(pag_seg)]}"
+                pag_seg_clean = pag_seg.rstrip("/")
+                if pag_seg_clean.isdigit() and int(pag_seg_clean) in id_remaps["pagamento_pessoa"]:
+                    path = f"{head_p}/pagamento/{id_remaps['pagamento_pessoa'][int(pag_seg_clean)]}"
 
             if "application/json" in ct.lower() and raw_body:
                 try:

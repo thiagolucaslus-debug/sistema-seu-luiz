@@ -70,7 +70,7 @@ os.makedirs(CLOUD_CONFIG_DIR, exist_ok=True)
 DB_PATH = os.path.join(DATA_DIR, "financeiro.db")
 DATABASE_URL = f"sqlite:///{DB_PATH}"
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False, "timeout": 30})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 

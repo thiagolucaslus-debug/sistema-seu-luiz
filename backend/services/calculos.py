@@ -25,6 +25,7 @@ def calcular_saldo_pessoa_mes(db: Session, pessoa_id: int, mes: int, ano: int) -
     total_gastos_mes = 0.0
     total_compras_para_mim_mes = 0.0
     total_reembolsos_mes = 0.0
+    total_parcelas_pagas_mes = 0.0
 
     for lanc in lancamentos:
         is_compra_para_mim = (lanc.tipo == "compra_para_mim")
@@ -46,10 +47,16 @@ def calcular_saldo_pessoa_mes(db: Session, pessoa_id: int, mes: int, ano: int) -
             elif parcela.ano == ano and parcela.mes == mes:
                 if is_compra_para_mim:
                     total_compras_para_mim_mes += parcela.valor
+                    if parcela.status == "pago":
+                        total_parcelas_pagas_mes -= parcela.valor
                 elif is_reembolso:
                     total_reembolsos_mes += parcela.valor
+                    if parcela.status == "pago":
+                        total_parcelas_pagas_mes += parcela.valor
                 else:
                     total_gastos_mes += parcela.valor
+                    if parcela.status == "pago":
+                        total_parcelas_pagas_mes += parcela.valor
 
     # Pagamentos recebidos antes deste mês abatem eventual saldo_anterior acumulado
     _, ultimo_dia = calendar.monthrange(ano, mes)
@@ -71,13 +78,14 @@ def calcular_saldo_pessoa_mes(db: Session, pessoa_id: int, mes: int, ano: int) -
 
     total_pagamentos_mes = sum(p.valor for p in pagamentos_mes)
     total_a_pagar = round(saldo_anterior + total_gastos_mes - total_compras_para_mim_mes + total_reembolsos_mes, 2)
-    diferenca = round(total_a_pagar - total_pagamentos_mes, 2)
+    diferenca = round(total_a_pagar - total_pagamentos_mes - total_parcelas_pagas_mes, 2)
 
     return {
         "saldo_anterior": round(saldo_anterior, 2),
         "total_gastos_mes": round(total_gastos_mes, 2),
         "total_compras_para_mim_mes": round(total_compras_para_mim_mes, 2),
         "total_reembolsos_mes": round(total_reembolsos_mes, 2),
+        "total_parcelas_pagas_mes": round(total_parcelas_pagas_mes, 2),
         "total_a_pagar": total_a_pagar,
         "total_pagamentos_mes": round(total_pagamentos_mes, 2),
         "saldo_devedor": max(diferenca, 0.0),
