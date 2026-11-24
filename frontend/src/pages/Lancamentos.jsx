@@ -15,6 +15,7 @@ import CardArtwork from '../components/CardArtwork';
 import { getCardBrand } from '../components/cardBrand';
 import PersonPicker from '../components/PersonPicker';
 import { todayLocalISO, predictInvoiceMonth } from '../components/dateUtils';
+import { isPersonalOnlyProfile } from '../components/profileMode';
 import { useAuth } from '../contexts/AuthContext';
 
 function fmt(val) {
@@ -42,6 +43,10 @@ const TODOS_TIPOS = [...TIPOS, ...TIPOS_EXTRA];
 
 function ModalNovoLancamento({ cartoes, contas, pessoas, modulos, onClose, onSaved }) {
   const { usuario } = useAuth();
+  const personalOnly = isPersonalOnlyProfile(usuario);
+  const tiposDisponiveis = personalOnly
+    ? TODOS_TIPOS.filter(t => !['emprestimo_dado', 'compra_para_mim', 'reembolso_pessoa'].includes(t.value))
+    : TODOS_TIPOS;
   const hoje = todayLocalISO();
   const [form, setForm] = useState({
     tipo: 'compra_cartao',
@@ -136,7 +141,7 @@ function ModalNovoLancamento({ cartoes, contas, pessoas, modulos, onClose, onSav
               onChange={e => f('tipo', e.target.value)}
               required
             >
-              {TODOS_TIPOS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+              {tiposDisponiveis.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
             </select>
           </div>
 
@@ -330,8 +335,8 @@ function ModalNovoLancamento({ cartoes, contas, pessoas, modulos, onClose, onSav
             </div>
           )}
 
-          {/* Quem usou / Pessoa responsável */}
-          {['compra_cartao', 'despesa_conta', 'emprestimo_dado', 'compra_para_mim', 'reembolso_pessoa'].includes(form.tipo) && (
+          {/* Quem usou / Pessoa responsável (oculto no modo pessoal exclusivo) */}
+          {!personalOnly && ['compra_cartao', 'despesa_conta', 'emprestimo_dado', 'compra_para_mim', 'reembolso_pessoa'].includes(form.tipo) && (
             <div className="bg-[var(--raised)] p-4 rounded-2xl border border-[var(--line)]">
               <label className="label">
                 {form.tipo === 'emprestimo_dado'
@@ -397,6 +402,10 @@ function ModalNovoLancamento({ cartoes, contas, pessoas, modulos, onClose, onSav
 
 export default function Lancamentos() {
   const { usuario } = useAuth();
+  const personalOnly = isPersonalOnlyProfile(usuario);
+  const tiposFiltroOpcoes = personalOnly
+    ? TODOS_TIPOS.filter(t => !['emprestimo_dado', 'compra_para_mim', 'reembolso_pessoa'].includes(t.value))
+    : TODOS_TIPOS;
   const hoje = new Date();
   const [mes, setMes] = useState(hoje.getMonth() + 1); // 0 = Todos os meses
   const [ano, setAno] = useState(hoje.getFullYear());
@@ -612,18 +621,20 @@ export default function Lancamentos() {
           onChange={e => setTipoFiltro(e.target.value)}
         >
           <option value="">Todos os tipos</option>
-          {TODOS_TIPOS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+          {tiposFiltroOpcoes.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
         </select></label>
 
-        {/* Filtro por Pessoa */}
-        <label><span className="label">Responsável</span><select
-          className="input"
-          value={pessoaFiltro}
-          onChange={e => setPessoaFiltro(e.target.value)}
-        >
-          <option value="">Todas as pessoas</option>
-          {pessoas.map(p => <option key={p.id} value={p.id}>{p.nome}</option>)}
-        </select></label>
+        {/* Filtro por Pessoa (oculto no modo pessoal exclusivo) */}
+        {!personalOnly && (
+          <label><span className="label">Responsável</span><select
+            className="input"
+            value={pessoaFiltro}
+            onChange={e => setPessoaFiltro(e.target.value)}
+          >
+            <option value="">Todas as pessoas</option>
+            {pessoas.map(p => <option key={p.id} value={p.id}>{p.nome}</option>)}
+          </select></label>
+        )}
 
         {/* Filtro por Cartão */}
         <label><span className="label">Cartão</span><select

@@ -12,6 +12,8 @@ import {
 import Avatar from '../components/Avatar';
 import CardArtwork from '../components/CardArtwork';
 import { getCardBrand } from '../components/cardBrand';
+import { useAuth } from '../contexts/AuthContext';
+import { isPersonalOnlyProfile } from '../components/profileMode';
 
 function fmt(val) {
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val || 0);
@@ -49,13 +51,21 @@ function MesSelector({ mes, ano, onChange }) {
 }
 
 export default function Dashboard() {
+  const { usuario } = useAuth();
+  const personalOnly = isPersonalOnlyProfile(usuario);
   const hoje = new Date();
   const [mes, setMes] = useState(hoje.getMonth() + 1);
   const [ano, setAno] = useState(hoje.getFullYear());
   const [dados, setDados] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [graficoTipo, setGraficoTipo] = useState('pessoas');
+  const [graficoTipo, setGraficoTipo] = useState(() => (personalOnly ? 'cartoes' : 'pessoas'));
   const [rankingTipo, setRankingTipo] = useState('devedores'); // 'devedores', 'mais_usou', 'quitacao'
+
+  useEffect(() => {
+    if (personalOnly && graficoTipo === 'pessoas') {
+      setGraficoTipo('cartoes');
+    }
+  }, [personalOnly, graficoTipo]);
 
   const carregar = async () => {
     setLoading(true);
@@ -116,8 +126,8 @@ export default function Dashboard() {
         <MesSelector mes={mes} ano={ano} onChange={(m, a) => { setMes(m); setAno(a); }} />
       </div>
 
-      {/* 4 Cards de Resumo Principal (TODOS CLICÁVEIS) */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+      {/* Cards de Resumo Principal (TODOS CLICÁVEIS) */}
+      <div className={`grid grid-cols-1 sm:grid-cols-2 ${personalOnly ? 'xl:grid-cols-3' : 'xl:grid-cols-4'} gap-4`}>
         {/* Card 1: Gastos do Mês -> Leva para Cartões */}
         <Link
           to="/cartoes"
@@ -140,29 +150,31 @@ export default function Dashboard() {
           </p>
         </Link>
 
-        {/* Card 2: Valores a Receber -> Leva para Pessoas */}
-        <Link
-          to="/pessoas"
-          className="card metric-card hover:scale-[1.02] hover:shadow-xl transition-all duration-200 cursor-pointer block border border-[var(--line)] group"
-          style={{ '--metric': '#0891b2' }}
-          title="Clique para ver quem deve e os fechamentos de pessoas"
-        >
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-xs font-semibold text-[var(--muted)] uppercase tracking-wider">Valores a Receber</span>
-            <div className="metric-icon group-hover:scale-110 transition-transform">
-              <Users size={20} />
+        {/* Card 2: Valores a Receber -> Leva para Pessoas (oculto no modo pessoal exclusivo) */}
+        {!personalOnly && (
+          <Link
+            to="/pessoas"
+            className="card metric-card hover:scale-[1.02] hover:shadow-xl transition-all duration-200 cursor-pointer block border border-[var(--line)] group"
+            style={{ '--metric': '#0891b2' }}
+            title="Clique para ver quem deve e os fechamentos de pessoas"
+          >
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-xs font-semibold text-[var(--muted)] uppercase tracking-wider">Valores a Receber</span>
+              <div className="metric-icon group-hover:scale-110 transition-transform">
+                <Users size={20} />
+              </div>
             </div>
-          </div>
-          <div className={`text-2xl font-black tracking-tight ${dados.total_a_receber > 0 ? 'text-emerald-500' : 'text-[var(--ink)]'}`}>
-            {fmt(dados.total_a_receber)}
-          </div>
-          <p className="text-xs text-[var(--muted)] mt-1 flex items-center justify-between">
-            <span>Pendente de pessoas</span>
-            <span className="text-emerald-500 font-bold group-hover:translate-x-1 transition-transform inline-flex items-center">
-              Ver pessoas <ArrowUpRight size={13} />
-            </span>
-          </p>
-        </Link>
+            <div className={`text-2xl font-black tracking-tight ${dados.total_a_receber > 0 ? 'text-emerald-500' : 'text-[var(--ink)]'}`}>
+              {fmt(dados.total_a_receber)}
+            </div>
+            <p className="text-xs text-[var(--muted)] mt-1 flex items-center justify-between">
+              <span>Pendente de pessoas</span>
+              <span className="text-emerald-500 font-bold group-hover:translate-x-1 transition-transform inline-flex items-center">
+                Ver pessoas <ArrowUpRight size={13} />
+              </span>
+            </p>
+          </Link>
+        )}
 
         {/* Card 3: Saldo em Contas -> Leva para Contas Bancárias */}
         <Link
@@ -256,7 +268,7 @@ export default function Dashboard() {
                 <p className="text-xs text-[var(--muted)]">Proporção no mês selecionado</p>
               </div>
               <div className="flex bg-[var(--canvas)] p-1 rounded-lg border border-[var(--line)]">
-                {['pessoas', 'cartoes', 'modulos'].map(tipo => (
+                {(personalOnly ? ['cartoes', 'modulos'] : ['pessoas', 'cartoes', 'modulos']).map(tipo => (
                   <button
                     key={tipo}
                     onClick={() => setGraficoTipo(tipo)}
@@ -326,7 +338,8 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* RANKINGS ORDENADOS DA VISÃO GERAL */}
+      {/* RANKINGS ORDENADOS DA VISÃO GERAL (oculto no modo pessoal exclusivo) */}
+      {!personalOnly && (
       <div className="card border border-[var(--line)] p-6">
         <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
           <div>
@@ -423,10 +436,12 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+      )}
 
       {/* Pessoas Devedoras & Faturas dos Cartões */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Painel de Pessoas */}
+      <div className={`grid grid-cols-1 ${personalOnly ? '' : 'lg:grid-cols-2'} gap-6`}>
+        {/* Painel de Pessoas (oculto no modo pessoal exclusivo) */}
+        {!personalOnly && (
         <div className="card border border-[var(--line)]">
           <div className="flex items-center justify-between mb-4">
             <div>
@@ -469,6 +484,7 @@ export default function Dashboard() {
             )}
           </div>
         </div>
+        )}
 
         {/* Faturas dos Cartões */}
         <div className="card border border-[var(--line)]">

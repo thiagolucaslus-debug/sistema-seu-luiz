@@ -5,6 +5,7 @@ import Avatar from '../components/Avatar';
 import CardArtwork from '../components/CardArtwork';
 import { getCardBrand } from '../components/cardBrand';
 import { todayLocalISO } from '../components/dateUtils';
+import { isPersonalOnlyProfile } from '../components/profileMode';
 import {
   CalendarCheck, CreditCard, Building2, Users, Send, CheckCircle2,
   AlertCircle, ArrowUpRight, ArrowDownLeft, Download, RefreshCw, X
@@ -17,12 +18,19 @@ function fmt(val) {
 export default function FechamentoMes() {
   const { usuario } = useAuth();
   const nomeGestor = usuario?.nome || 'Administração Financeira';
+  const personalOnly = isPersonalOnlyProfile(usuario);
   const hoje = new Date();
   const [mes, setMes] = useState(hoje.getMonth() + 1);
   const [ano, setAno] = useState(hoje.getFullYear());
   const [dados, setDados] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [abaAtiva, setAbaAtiva] = useState('pessoas'); // 'pessoas' | 'cartoes' | 'contas'
+  const [abaAtiva, setAbaAtiva] = useState(() => (personalOnly ? 'cartoes' : 'pessoas')); // 'pessoas' | 'cartoes' | 'contas'
+
+  useEffect(() => {
+    if (personalOnly && abaAtiva === 'pessoas') {
+      setAbaAtiva('cartoes');
+    }
+  }, [personalOnly, abaAtiva]);
 
   // Modais de ação rápida
   const [modalPagamento, setModalPagamento] = useState(null); // pessoa selecionada
@@ -276,7 +284,9 @@ export default function FechamentoMes() {
             <h1 className="text-2xl sm:text-3xl font-extrabold text-ink tracking-tight">Fechamento do Mês</h1>
           </div>
           <p className="text-slate-400 text-sm mt-0.5">
-            Visão consolidada de faturas, saídas em bancos e liquidação de dívidas de cada pessoa
+            {personalOnly
+              ? 'Visão consolidada de faturas de cartões e saídas em contas bancárias'
+              : 'Visão consolidada de faturas, saídas em bancos e liquidação de dívidas de cada pessoa'}
           </p>
         </div>
 
@@ -315,7 +325,7 @@ export default function FechamentoMes() {
       </div>
 
       {/* Cards de Métricas Consolidadas do Mês */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className={`grid grid-cols-1 sm:grid-cols-2 ${personalOnly ? 'lg:grid-cols-2' : 'lg:grid-cols-4'} gap-4`}>
         {/* Card 1: Faturas de Cartão */}
         <div className="card p-5 border-l-4 border-l-blue-500 relative overflow-hidden">
           <div className="flex items-center justify-between text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">
@@ -337,39 +347,45 @@ export default function FechamentoMes() {
         </div>
 
         {/* Card 3: A Receber de Pessoas */}
-        <div className="card p-5 border-l-4 border-l-emerald-500 relative overflow-hidden">
-          <div className="flex items-center justify-between text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">
-            <span>A Receber de Pessoas</span>
-            <ArrowDownLeft size={18} className="text-emerald-400" />
+        {!personalOnly && (
+          <div className="card p-5 border-l-4 border-l-emerald-500 relative overflow-hidden">
+            <div className="flex items-center justify-between text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">
+              <span>A Receber de Pessoas</span>
+              <ArrowDownLeft size={18} className="text-emerald-400" />
+            </div>
+            <p className="text-2xl font-black text-emerald-400">{fmt(r.total_a_receber_pessoas)}</p>
+            <p className="text-xs text-slate-400 mt-1">Soma das dívidas pendentes de terceiros</p>
           </div>
-          <p className="text-2xl font-black text-emerald-400">{fmt(r.total_a_receber_pessoas)}</p>
-          <p className="text-xs text-slate-400 mt-1">Soma das dívidas pendentes de terceiros</p>
-        </div>
+        )}
 
         {/* Card 4: Já Recebido no Mês */}
-        <div className="card p-5 border-l-4 border-l-amber-500 relative overflow-hidden">
-          <div className="flex items-center justify-between text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">
-            <span>Já Recebido no Mês</span>
-            <CheckCircle2 size={18} className="text-amber-400" />
+        {!personalOnly && (
+          <div className="card p-5 border-l-4 border-l-amber-500 relative overflow-hidden">
+            <div className="flex items-center justify-between text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">
+              <span>Já Recebido no Mês</span>
+              <CheckCircle2 size={18} className="text-amber-400" />
+            </div>
+            <p className="text-2xl font-black text-ink">{fmt(r.total_recebido_mes)}</p>
+            <p className="text-xs text-slate-400 mt-1">Pagamentos liquidados em {meses[mes - 1]}</p>
           </div>
-          <p className="text-2xl font-black text-ink">{fmt(r.total_recebido_mes)}</p>
-          <p className="text-xs text-slate-400 mt-1">Pagamentos liquidados em {meses[mes - 1]}</p>
-        </div>
+        )}
       </div>
 
       {/* Navegação por Abas: Pessoas, Cartões, Contas */}
       <div className="flex items-center gap-2 border-b border-slate-700/60 pb-3">
-        <button
-          onClick={() => setAbaAtiva('pessoas')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all ${
-            abaAtiva === 'pessoas'
-              ? 'bg-blue-600 text-white shadow'
-              : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
-          }`}
-        >
-          <Users size={17} />
-          <span>Fechamento por Pessoa ({dados?.pessoas?.length || 0})</span>
-        </button>
+        {!personalOnly && (
+          <button
+            onClick={() => setAbaAtiva('pessoas')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all ${
+              abaAtiva === 'pessoas'
+                ? 'bg-blue-600 text-white shadow'
+                : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+            }`}
+          >
+            <Users size={17} />
+            <span>Fechamento por Pessoa ({dados?.pessoas?.length || 0})</span>
+          </button>
+        )}
 
         <button
           onClick={() => setAbaAtiva('cartoes')}
@@ -397,7 +413,7 @@ export default function FechamentoMes() {
       </div>
 
       {/* Conteúdo da Aba 1: PESSOAS (Fechamento e Liquidação) */}
-      {abaAtiva === 'pessoas' && (
+      {!personalOnly && abaAtiva === 'pessoas' && (
         <div className="space-y-4">
           {loading ? (
             <div className="card text-center py-16 text-slate-400 text-sm">Carregando fechamento das pessoas...</div>

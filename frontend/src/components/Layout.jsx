@@ -7,6 +7,7 @@ import Avatar from './Avatar';
 import ModalAcessoCelular from './ModalAcessoCelular';
 import { formatCloudTimestamp } from './cloudFormat';
 import { todayLocalISO } from './dateUtils';
+import { isPersonalOnlyProfile } from './profileMode';
 import {
   LayoutDashboard, CreditCard, Building2, Users, Grid3X3,
   ListPlus, BarChart3, Menu, X, LogOut, ChevronRight, Settings,
@@ -40,6 +41,7 @@ export default function Layout({ children }) {
   const { theme, setTheme } = useAppearance();
   const nome = usuario?.nome || 'Administração Financeira';
   const foto = usuario?.logo_path;
+  const personalOnly = isPersonalOnlyProfile(usuario);
   const themeLabel = theme === 'dark' ? 'Escuro' : 'Claro';
   const themeActionLabel = theme === 'dark' ? 'Ativar modo claro' : 'Ativar modo escuro';
 
@@ -96,7 +98,7 @@ export default function Layout({ children }) {
     { path: '/lancamentos', label: 'Lançamentos', icon: ListPlus },
     { path: '/cartoes', label: 'Cartões de Crédito', icon: CreditCard },
     { path: '/contas', label: 'Contas Bancárias', icon: Building2 },
-    { path: '/pessoas', label: 'Pessoas & Fechamentos', icon: Users },
+    ...(!personalOnly ? [{ path: '/pessoas', label: 'Pessoas & Fechamentos', icon: Users }] : []),
     { path: '/modulos', label: 'Módulos', icon: Grid3X3 },
     { path: '/relatorios', label: 'Relatórios', icon: BarChart3 },
     { path: '/whatsapp', label: 'WhatsApp Web', icon: MessageCircle },
@@ -299,12 +301,20 @@ export default function Layout({ children }) {
         {/* Cabeçalho do menu */}
         <div className="app-brand flex items-center justify-between">
           <Link to="/" className="flex items-center gap-3 min-w-0" onClick={() => setSidebarOpen(false)}>
-            <img
-              src="/logo-oficial.png"
-              alt="Administração Financeira"
-              className="w-12 h-12 object-contain shrink-0 select-none drop-shadow"
-              draggable={false}
-            />
+            {personalOnly ? (
+              <Avatar
+                nome={nome}
+                foto={foto}
+                className="w-11 h-11 rounded-full shrink-0 ring-2 ring-blue-500/40 shadow-md"
+              />
+            ) : (
+              <img
+                src="/logo-oficial.png"
+                alt="Administração Financeira"
+                className="w-12 h-12 object-contain shrink-0 select-none drop-shadow"
+                draggable={false}
+              />
+            )}
             <div className="min-w-0">
               <p className="text-white font-bold text-base leading-tight truncate">{nome}</p>
               <p className="app-brand__subtitle">Administração Financeira</p>
@@ -413,12 +423,16 @@ export default function Layout({ children }) {
               <Menu size={21} />
             </button>
             <Link to="/" className="flex items-center gap-1.5 min-w-0">
-              <img
-                src="/logo-oficial.png"
-                alt="Administração Financeira"
-                className="w-8 h-8 object-contain shrink-0 select-none"
-                draggable={false}
-              />
+              {personalOnly ? (
+                <Avatar nome={nome} foto={foto} className="w-8 h-8 rounded-full shrink-0 ring-2 ring-blue-500/30" />
+              ) : (
+                <img
+                  src="/logo-oficial.png"
+                  alt="Administração Financeira"
+                  className="w-8 h-8 object-contain shrink-0 select-none"
+                  draggable={false}
+                />
+              )}
               <span className="font-bold text-[var(--ink)] text-sm truncate max-w-[110px]">{nome}</span>
             </Link>
           </div>
@@ -456,6 +470,9 @@ export default function Layout({ children }) {
           className="hidden lg:flex items-center justify-between gap-4 px-8 py-2.5 border-b border-[var(--line)] bg-[var(--surface)]/90 backdrop-blur print-hidden shrink-0"
         >
           <div className="flex items-center gap-3 min-w-0">
+            {personalOnly && (
+              <Avatar nome={nome} foto={foto} className="w-6 h-6 rounded-full shrink-0 ring-1 ring-blue-500/30" />
+            )}
             <span className="text-xs font-semibold text-[var(--muted)] truncate">
               Perfil ativo: <strong className="text-[var(--ink)]">{nome}</strong>
             </span>
@@ -564,13 +581,23 @@ export default function Layout({ children }) {
             <Building2 size={18} />
             <span>Contas</span>
           </Link>
-          <Link
-            to="/pessoas"
-            className={`flex flex-col items-center gap-0.5 text-[10px] ${location.pathname === '/pessoas' ? 'text-blue-400 font-bold' : 'text-slate-400'}`}
-          >
-            <Users size={18} />
-            <span>Pessoas</span>
-          </Link>
+          {!personalOnly ? (
+            <Link
+              to="/pessoas"
+              className={`flex flex-col items-center gap-0.5 text-[10px] ${location.pathname === '/pessoas' ? 'text-blue-400 font-bold' : 'text-slate-400'}`}
+            >
+              <Users size={18} />
+              <span>Pessoas</span>
+            </Link>
+          ) : (
+            <Link
+              to="/relatorios"
+              className={`flex flex-col items-center gap-0.5 text-[10px] ${location.pathname === '/relatorios' ? 'text-blue-400 font-bold' : 'text-slate-400'}`}
+            >
+              <BarChart3 size={18} />
+              <span>Relatórios</span>
+            </Link>
+          )}
         </nav>
       </div>
     </div>

@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { AppearanceProvider } from './contexts/AppearanceContext';
 import Layout from './components/Layout';
+import { isPersonalOnlyProfile } from './components/profileMode';
 import Login from './pages/Login';
 import Lancamentos from './pages/Lancamentos';
 import Cartoes from './pages/Cartoes';
@@ -38,6 +39,14 @@ function ProtectedRoute({ children }) {
   return <Layout>{children}</Layout>;
 }
 
+function PessoasRoute() {
+  const { usuario } = useAuth();
+  if (isPersonalOnlyProfile(usuario)) {
+    return <Navigate to="/" replace />;
+  }
+  return <Pessoas />;
+}
+
 function AppRoutes() {
   return (
     <Routes>
@@ -53,7 +62,7 @@ function AppRoutes() {
       <Route path="/lancamentos" element={<ProtectedRoute><Lancamentos /></ProtectedRoute>} />
       <Route path="/cartoes" element={<ProtectedRoute><Cartoes /></ProtectedRoute>} />
       <Route path="/contas" element={<ProtectedRoute><Contas /></ProtectedRoute>} />
-      <Route path="/pessoas" element={<ProtectedRoute><Pessoas /></ProtectedRoute>} />
+      <Route path="/pessoas" element={<ProtectedRoute><PessoasRoute /></ProtectedRoute>} />
       <Route path="/modulos" element={<ProtectedRoute><Modulos /></ProtectedRoute>} />
       <Route path="/relatorios" element={<ProtectedRoute><Relatorios /></ProtectedRoute>} />
       <Route path="/whatsapp" element={<ProtectedRoute><WhatsApp /></ProtectedRoute>} />

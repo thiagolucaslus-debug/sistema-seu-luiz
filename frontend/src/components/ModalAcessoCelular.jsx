@@ -2,8 +2,12 @@ import { useState, useEffect } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { pessoas as pessoasApi, PUBLIC_CLOUD_URL } from '../api/client';
 import { Smartphone, Copy, Check, ExternalLink, X, Send, ShieldCheck } from 'lucide-react';
+import { useAuth } from '../contexts/AuthContext';
+import { isPersonalOnlyProfile } from './profileMode';
 
 export default function ModalAcessoCelular({ isOpen, onClose }) {
+  const { usuario } = useAuth();
+  const personalOnly = isPersonalOnlyProfile(usuario);
   const [copied, setCopied] = useState(false);
   const [copiedPessoaId, setCopiedPessoaId] = useState(null);
   const [pessoas, setPessoas] = useState([]);
@@ -11,12 +15,14 @@ export default function ModalAcessoCelular({ isOpen, onClose }) {
   const urlAtual = PUBLIC_CLOUD_URL;
 
   useEffect(() => {
-    if (isOpen) {
+    if (isOpen && !personalOnly) {
       pessoasApi.listar()
         .then(res => setPessoas(res.data || []))
         .catch(() => setPessoas([]));
+    } else if (personalOnly) {
+      setPessoas([]);
     }
-  }, [isOpen]);
+  }, [isOpen, personalOnly]);
 
   if (!isOpen) return null;
 
